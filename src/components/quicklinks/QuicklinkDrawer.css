@@ -1,0 +1,64 @@
+
+.quicklinks-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 9999;
+  display: flex;
+  justify-content: flex-end;
+  animation: qlBackdropFadeIn 0.2s ease-out forwards;
+}
+
+.quicklinks-side-drawer {
+  width: 100%;
+  max-width: 800px;
+  height: 100%;
+  background: #ffffff;
+  border-top-left-radius: 28px;
+  border-bottom-left-radius: 28px;
+  border-left: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: -12px 0 40px -10px rgba(15, 23, 42, 0.22);
+  display: flex;
+  flex-direction: column;
+  padding: 24px 28px;
+  animation: qlSlideInRight 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+
+.quicklink-card {
+  transition: all 0.2s ease-in-out;
+}
+
+.quicklink-card:hover {
+  transform: translateY(-2px);
+}
+
+@media (max-width: 640px) {
+  .quicklinks-side-drawer {
+    max-width: 100%;
+    border-radius: 0;
+    padding: 20px 16px;
+  }
+}
+
+
+@keyframes qlBackdropFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes qlSlideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
