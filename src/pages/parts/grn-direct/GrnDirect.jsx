@@ -681,6 +681,7 @@ Authorized Signature
         onClose={() => setIsBulkCsvOpen(false)}
         onUpload={handleUploadCsv}
         isUploading={isUploading}
+        loadData={loadData}
       />
 
       <ViewGrnModal

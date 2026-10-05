@@ -44,7 +44,7 @@ function downloadBlob(blob, filename) {
   window.URL.revokeObjectURL(url);
 }
 
-export default function AddBulkCsvModal({ isOpen, onClose, onSuccess }) {
+export default function AddBulkCsvModal({ isOpen, onClose, onSuccess,loadData }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [isValidated, setIsValidated] = useState(false);
@@ -93,6 +93,7 @@ export default function AddBulkCsvModal({ isOpen, onClose, onSuccess }) {
     setSummary(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
     onClose?.();
+    loadData()
   }
 
   // Shared runner for validate + create
