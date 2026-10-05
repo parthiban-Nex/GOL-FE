@@ -20,7 +20,7 @@ import { showToast } from "@/utils/toast";
 import AddGrnModal from "./AddGrnModal";
 import AddBulkCsvModal from "./AddBulkCsvModal";
 import ViewGrnModal from "@/components/parts/ViewGrnModal";
-import PartsFilterModal from "@/components/parts/PartsFilterModal";
+import GrnDirectFilterModal from "@/components/parts/GrnDirectFilterModal";
 import { grnApi } from "@/services/api/grnApi";
 import jsPDF from "jspdf";
 import mytvslogo from "../../../assets/images/tvslogo.png"
@@ -176,9 +176,10 @@ export default function GrnDirect() {
     }
   }
 
-  const activeFilterCount =
-    (filters.vendorCode !== "ALL" ? 1 : 0) + (filters.fromDate ? 1 : 0);
-
+ const activeFilterCount =
+  (filters.vendorCode && filters.vendorCode !== "ALL" ? 1 : 0) +
+  (filters.fromDate ? 1 : 0) +
+  (filters.toDate ? 1 : 0);
      const handlePdfClick = async(row) => {
    const response =await grnApi.getGrnPdf({id:row.id})
   //  if(blob.data && blob.data.type=="application/pdf"){
@@ -690,20 +691,19 @@ Authorized Signature
         grn={viewingGrn}
       />
 
-      <PartsFilterModal
-        isOpen={isFilterOpen}
-        onClose={() => setIsFilterOpen(false)}
-        type="grn-direct"
-        filters={filters}
-        onApply={(f) => {
-          setFilters((prev) => ({ ...prev, ...f }));
-          setPage(1);
-        }}
-        onReset={(f) => {
-          setFilters(f);
-          setPage(1);
-        }}
-      />
+      <GrnDirectFilterModal
+  isOpen={isFilterOpen}
+  onClose={() => setIsFilterOpen(false)}
+  filters={filters}
+  onApply={(f) => {
+    setFilters((prev) => ({ ...prev, ...f }));
+    setPage(1);
+  }}
+  onReset={(f) => {
+    setFilters(f);
+    setPage(1);
+  }}
+/>
     </div>
   );
 }
