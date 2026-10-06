@@ -7,14 +7,11 @@ import Input from "@/components/ui/Input";
 import Select from "@/components/ui/Select";
 import Modal from "@/components/ui/Modal";
 import AttendanceAnalyticsChart from "@/components/attendance/AttendanceAnalyticsChart";
-import { env } from "@/config/env";
 import {
   STATUS_BY_KEY,
   MARK_STATUS_KEYS,
-  INITIAL_MARK_ATTENDANCE,
   SHIFT_OPTIONS,
   REGULARISATION_TYPES,
-  INITIAL_ATTENDANCE_DETAILS,
   ATTENDANCE_DETAILS_RANGE,
   avatarColor,
 } from "@/pages/attendance/mockAttendance";
@@ -349,7 +346,6 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Reused Modal state for OD/DR remarks
   const [modalOpen, setModalOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [activeStatusKey, setActiveStatusKey] = useState("OD");
@@ -369,7 +365,6 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
       setLoading(true);
       const res = await attendanceApi.getTodayMarkList({
         date: selectedDate,
-        shift: shiftFilter === "All Shifts" ? undefined : shiftFilter,
       });
       if (res && res.requestSuccessful) {
         const data = Array.isArray(res.data) ? res.data : [];
@@ -392,7 +387,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate, shiftFilter]);
+  }, [selectedDate]);
 
   useEffect(() => {
     fetchTodayList();
@@ -493,7 +488,6 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
 
     try {
       setSaving(true);
-      // Only send modified records
       const payloadRecords = modifiedRecords.map((r) => ({
         id: r.id,
         employeeId: r.employeeId || r.id,
@@ -806,26 +800,7 @@ const [toDate, setToDate] = useState(() => new Date().toISOString().split("T")[0
     fetchDetails(fromDate, toDate);
   }, [fetchDetails, fromDate, toDate, refreshKey]);
 
-  const handleApplyPreset = (days) => {
-    const today = new Date();
-    const toStr = today.toISOString().split("T")[0];
-    const past = new Date(today);
-    past.setDate(today.getDate() - days);
-    const fromStr = past.toISOString().split("T")[0];
 
-    setFromDate(fromStr);
-    setToDate(toStr);
-  };
-
-  const handleThisMonth = () => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1)
-      .toISOString()
-      .split("T")[0];
-    const today = now.toISOString().split("T")[0];
-    setFromDate(firstDay);
-    setToDate(today);
-  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

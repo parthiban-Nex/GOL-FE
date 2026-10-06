@@ -5,8 +5,6 @@ import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import {
-  STATUS_BY_KEY,
-  ANALYTICS_WEEKS,
   ANALYTICS_SUMMARY,
 } from "@/pages/attendance/mockAttendance";
 import { attendanceApi } from "@/services/api/attendanceApi";
@@ -57,7 +55,7 @@ export default function AttendanceAnalyticsChart({ refreshKey } = {}) {
 
   useEffect(() => {
     fetchAnalytics({ period });
-  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   const handleApplyCustomRange = () => {
     if (from && to) fetchAnalytics({ from, to });
@@ -90,7 +88,6 @@ export default function AttendanceAnalyticsChart({ refreshKey } = {}) {
         return;
       }
 
-      // Check if server returned a JSON error payload disguised as Blob
       if (res.type === "application/json") {
         const text = await res.text();
         const json = JSON.parse(text);
@@ -281,7 +278,6 @@ function ChartBody({ type, data = [] }) {
   const innerW = W - padLeft - padRight - barInset * 2;
   const innerH = H - padTop - padBottom;
 
-  // Only render series that actually have records (> 0) in the queried period
   const visibleSeries = SERIES_CONFIG.filter((s) =>
     data.some((d) => (Number(d[s.key]) || 0) > 0)
   );
@@ -300,7 +296,6 @@ function ChartBody({ type, data = [] }) {
   );
   const maxY = Math.max(5, Math.ceil(maxDataVal));
 
-  // Ticks start from 1 with NO 0 tick
   let yTicks = [];
   if (maxY <= 5) {
     yTicks = [1, 2, 3, 4, 5];
