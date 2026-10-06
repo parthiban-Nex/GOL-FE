@@ -17,3 +17,15 @@ Then open the URL Vite prints (defaults to `http://localhost:5173`)
 - Any subsequent modifications after initial submission must be processed via the Regularisation workflow.
 - All attendance updates made via Regularisation immediately sync and reflect across the mark list, analytics chart, and details table.
 
+#initial commit
+
+## GRn Changes
+
+Created Direct grn 
+1) listing grn screen
+2) add grn modal
+3) filter modal
+4) edit grn modal
+5) bulk create grn modal
+6) grn pdf creation
+7) grn view modal
