@@ -615,7 +615,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
                                   : "bg-ink-100 text-ink-500 hover:bg-ink-200 cursor-pointer",
                               )}
                               aria-label={`Mark ${s.label}`}
-                              title={r.isFrozen ? `${s.label} (Already saved)` : `Click to mark as ${s.label}`}
+                              title={r.isFrozen ? `Already saved` : `Click to mark as ${s.label}`}
                             >
                               {s.letter}
                             </button>
