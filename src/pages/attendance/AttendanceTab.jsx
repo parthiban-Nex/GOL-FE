@@ -704,8 +704,12 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
 function AttendanceDetailsCard({ refreshKey }) {
   const [rows, setRows] = useState([]);
   const [range, setRange] = useState(ATTENDANCE_DETAILS_RANGE);
-  const [fromDate, setFromDate] = useState(ATTENDANCE_DETAILS_RANGE.from);
-  const [toDate, setToDate] = useState(ATTENDANCE_DETAILS_RANGE.to);
+  const [fromDate, setFromDate] = useState(() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  return d.toISOString().split("T")[0];
+});
+const [toDate, setToDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
