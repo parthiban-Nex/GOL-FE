@@ -39,7 +39,13 @@ createBulkGrn(formData) {
     responseType: "blob",
   });
 },
-};
+updateGrn(payload) {
+  return axiosClient.post("/parts/updateGrn", payload);
+},
+listBinLocation(payload) {
+  return axiosClient.post("/binLocations/listBinLocationsForOutlet", payload);
+}
+}
 
 
 

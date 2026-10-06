@@ -7,8 +7,10 @@ import SingleSelect from "@/components/ui/SingleSelect";
 import Button from "@/components/ui/Button";
 import { grnApi } from "@/services/api/grnApi";
 import { GRN_NAME_OPTIONS } from "../mockPartsData";
+import BinLocationModal from "./BinLocationModal";
 
-const createEmptyItem = () => ({
+// Exported so EditGrnModal can reuse them.
+export const createEmptyItem = () => ({
   rowId: crypto.randomUUID(), // stable key, so per-row autocomplete state survives deletes
   itemId: 0,
   partNo: "",
@@ -23,10 +25,11 @@ const createEmptyItem = () => ({
   sgst: 0,
   igst: 0,
   totalAmount: "0.00",
+  bins: [], // [{ binId, binLocation, quantity }]
 });
 
 // (qty * cost) + tax, where tax = CGST + SGST + IGST percentages
-function calcLineTotal(item) {
+export function calcLineTotal(item) {
   const qty = Number(item.receivedQty) || 0;
   const cost = Number(item.cost) || 0;
   const taxPct =
@@ -35,6 +38,16 @@ function calcLineTotal(item) {
     (Number(item.igst) || 0);
   const base = qty * cost;
   return (base + (base * taxPct) / 100).toFixed(2);
+}
+
+// True when the saved bins add up to the received qty.
+export function isBinsComplete(row) {
+  const bins = row.bins ?? [];
+  if (bins.length === 0) return false;
+  const total = bins.reduce((s, b) => s + (Number(b.quantity) || 0), 0);
+  return (
+    Number(total.toFixed(2)) === Number((Number(row.receivedQty) || 0).toFixed(2))
+  );
 }
 
 const emptyFormData = {
@@ -57,7 +70,7 @@ const emptyFormData = {
  * Searches grnApi.searchItemDetails as the user types (debounced, min 3 chars).
  * Selection is reported via onSelect(option | null); the parent fetches details.
  */
-function PartNoAutocomplete({ value, disabled, onSelect }) {
+export function PartNoAutocomplete({ value, disabled, onSelect }) {
   const [options, setOptions] = useState([]);
   const [inputValue, setInputValue] = useState(value || "");
   const [loading, setLoading] = useState(false);
@@ -154,6 +167,9 @@ export default function AddGrnModal({
   const [items, setItems] = useState(() => [createEmptyItem()]);
   const [errors, setErrors] = useState({});
 
+  // rowId of the line whose bin locations are being edited (null = closed)
+  const [binRowId, setBinRowId] = useState(null);
+
   // Vendor autocomplete state
   const [vendorOptions, setVendorOptions] = useState([]);
   const [selectedVendor, setSelectedVendor] = useState(null);
@@ -166,6 +182,7 @@ export default function AddGrnModal({
       setFormData(emptyFormData);
       setItems([createEmptyItem()]);
       setErrors({});
+      setBinRowId(null);
       setVendorOptions([]);
       setSelectedVendor(null);
       setVendorInput("");
@@ -244,6 +261,11 @@ export default function AddGrnModal({
         target.totalAmount = calcLineTotal(target);
       }
 
+      // A new received qty invalidates the saved bin split.
+      if (field === "receivedQty") {
+        target.bins = [];
+      }
+
       copy[index] = target;
       return copy;
     });
@@ -287,6 +309,7 @@ export default function AddGrnModal({
           cgst: detail.cgst ?? 0,
           sgst: detail.sgst ?? 0,
           igst: detail.igst ?? 0,
+          bins: [], // a different part means the old bin split no longer applies
         };
         target.totalAmount = calcLineTotal(target);
         copy[index] = target;
@@ -296,6 +319,14 @@ export default function AddGrnModal({
     } catch (err) {
       console.error("Error fetching part details", err);
     }
+  }
+
+  function handleSaveBins(bins) {
+    setItems((prev) =>
+      prev.map((it) => (it.rowId === binRowId ? { ...it, bins } : it)),
+    );
+    setBinRowId(null);
+    setErrors((prev) => (prev.items ? { ...prev, items: null } : prev));
   }
 
   function handleAddPartRow() {
@@ -318,6 +349,9 @@ export default function AddGrnModal({
     }
     if (items.some((it) => !it.itemId || !it.partNo)) {
       newErrors.items = "Select a part for every row";
+    } else if (items.some((it) => !isBinsComplete(it))) {
+      newErrors.items =
+        "Select bin locations for every row (bin quantities must match Received Qty)";
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -330,303 +364,330 @@ export default function AddGrnModal({
       vendorId: selectedVendor.id,
       vendorCode: selectedVendor.vendorCode,
       vendorState: selectedVendor.state,
-      items,
+      // First bin feeds the single binId / binLocation fields on the grn part;
+      // the full split stays in `bins` for bindata.
+      items: items.map((it) => ({
+        ...it,
+        binId: it.bins[0]?.binId,
+        binLocation: it.bins[0]?.binLocation,
+      })),
     });
   }
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Add GRN"
-      size="xl"
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            form="add-auto-grn-form"
-            isLoading={isSubmitting}
-          >
-            {isSubmitting ? "Submitting..." : "Submit"}
-          </Button>
-        </>
-      }
-    >
-      <form
-        id="add-auto-grn-form"
-        onSubmit={handleSubmit}
-        className="space-y-5"
-      >
-        {/* Grand Total */}
-        <div className="max-w-xs">
-          <Input
-            label="Grand Total"
-            required
-            variant="underline"
-            value={formData.grandTotal}
-            onChange={(e) => handleChange("grandTotal", e.target.value)}
-            className="text-base font-bold"
-          />
-        </div>
-
-        {/* Form Fields - 3 column grid */}
-        <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-3">
-          <div className="-mt-2.5">
-            <SingleSelect
-              label="GRN Name"
-              required
-              value={formData.grnName}
-              onChange={(value) => handleChange("grnName", value)}
-              options={GRN_NAME_OPTIONS}
-              error={errors.grnName}
-            />
-          </div>
-
-          {/* Vendor Code - MUI Autocomplete, fetches from grnApi.getVendor */}
-          <div>
-            <Autocomplete
-              options={vendorOptions}
-              value={selectedVendor}
-              onChange={(_, vendor) => handleVendorChange(vendor)}
-              inputValue={vendorInput}
-              onInputChange={(_, value) => setVendorInput(value)}
-              getOptionLabel={(option) => option?.vendorCode ?? ""}
-              isOptionEqualToValue={(option, val) => option.id === val.id}
-              filterOptions={(x) => x} // filtering is done by the API
-              loading={isVendorLoading}
-              noOptionsText={
-                vendorInput.trim() ? "No vendors found" : "Type to search"
-              }
-              // Portal + high z-index so the list isn't clipped by the modal body
-              componentsProps={{ popper: { style: { zIndex: 9999 } } }}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Vendor Code"
-                  required
-                  variant="standard"
-                  error={!!errors.vendorCode}
-                  helperText={errors.vendorCode || ""}
-                  fullWidth
-                  InputProps={{
-                    ...params.InputProps,
-                    endAdornment: (
-                      <>
-                        {isVendorLoading ? (
-                          <CircularProgress color="inherit" size={16} />
-                        ) : null}
-                      </>
-                    ),
-                  }}
-                />
-              )}
-            />
-          </div>
-
-          <Input
-            label="Supplier Invoice Number"
-            required
-            variant="underline"
-            value={formData.supplierInvoiceNumber}
-            onChange={(e) =>
-              handleChange("supplierInvoiceNumber", e.target.value)
-            }
-            placeholder="e.g. CSCR-VLR-0010"
-            error={errors.supplierInvoiceNumber}
-          />
-
-          <Input
-            type="date"
-            label="Invoice Date"
-            variant="underline"
-            value={formData.invoiceDate}
-            onChange={(e) => handleChange("invoiceDate", e.target.value)}
-          />
-          <Input
-            type="number"
-            step="0.01"
-            label="Invoice Amount"
-            variant="underline"
-            value={formData.invoiceAmount}
-            onChange={(e) => handleChange("invoiceAmount", e.target.value)}
-            placeholder="0.00"
-          />
-          <Input
-            label="ESugam Road Permit Number"
-            variant="underline"
-            value={formData.eSugamNumber}
-            onChange={(e) => handleChange("eSugamNumber", e.target.value)}
-            placeholder="e.g. ESUGAM-99201"
-          />
-
-          <Input
-            label="LR Number"
-            variant="underline"
-            value={formData.lrNumber}
-            onChange={(e) => handleChange("lrNumber", e.target.value)}
-            placeholder="e.g. LR-89201"
-          />
-          <Input
-            type="date"
-            label="LR Date"
-            variant="underline"
-            value={formData.lrDate}
-            onChange={(e) => handleChange("lrDate", e.target.value)}
-          />
-          <Input
-            label="Transport Name"
-            variant="underline"
-            value={formData.transportName}
-            onChange={(e) => handleChange("transportName", e.target.value)}
-            placeholder="e.g. SafeXpress Logistics"
-          />
-
-          <Input
-            type="number"
-            step="0.01"
-            label="Freight Charges"
-            variant="underline"
-            value={formData.freightCharges}
-            onChange={(e) => handleChange("freightCharges", e.target.value)}
-            placeholder="0.00"
-          />
-          <Input
-            type="number"
-            step="0.01"
-            label="Miscellaneous Charges"
-            variant="underline"
-            value={formData.miscellaneousCharges}
-            onChange={(e) =>
-              handleChange("miscellaneousCharges", e.target.value)
-            }
-            placeholder="0.00"
-          />
-        </div>
-
-        {/* Parts Line Items - a free-form editable grid, which the
-            shared Table component doesn't support, so this stays
-            hand-built rather than forced into it. */}
-        <div className="rounded-xl border border-ink-100 bg-white p-3 shadow-xs">
-          {errors.items && (
-            <p className="mb-2 text-xs text-danger-500">{errors.items}</p>
-          )}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-ink-100 text-ink-500">
-                  <th className="pb-2 font-semibold">Parts No</th>
-                  <th className="pb-2 font-semibold">Description</th>
-                  <th className="pb-2 font-semibold">PO Number</th>
-                  <th className="pb-2 font-semibold">Sup Inv Qty</th>
-                  <th className="pb-2 font-semibold">Received Qty</th>
-                  <th className="pb-2 font-semibold">Cost</th>
-                  <th className="pb-2 font-semibold text-brand-700">
-                    Total Amount
-                  </th>
-                  <th className="w-8 pb-2" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-50">
-                {items.map((row, idx) => (
-                  <tr key={row.rowId} className="hover:bg-ink-50/50">
-                    <td className="py-2.5 pr-2">
-                      <PartNoAutocomplete
-                        value={row.partNo}
-                        disabled={!selectedVendor}
-                        onSelect={(option) => handlePartSelect(idx, option)}
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input
-                        type="text"
-                        value={row.description}
-                        readOnly
-                        className="w-44 truncate border-b border-ink-200 bg-transparent pb-0.5 font-medium text-ink-800 focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input
-                        type="text"
-                        value={row.poNumber}
-                        onChange={(e) =>
-                          handleItemChange(idx, "poNumber", e.target.value)
-                        }
-                        className="w-20 border-b border-ink-200 bg-transparent pb-0.5 font-semibold text-brand-700 focus:border-brand-600 focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input
-                        type="number"
-                        min="1"
-                        value={row.supInvQty}
-                        onChange={(e) =>
-                          handleItemChange(idx, "supInvQty", e.target.value)
-                        }
-                        className="w-14 border-b border-ink-200 bg-transparent pb-0.5 text-center text-ink-800 focus:border-brand-600 focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input
-                        type="number"
-                        min="1"
-                        value={row.receivedQty}
-                        onChange={(e) =>
-                          handleItemChange(idx, "receivedQty", e.target.value)
-                        }
-                        className="w-14 border-b border-ink-200 bg-transparent pb-0.5 text-center text-ink-800 focus:border-brand-600 focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2">
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={row.cost}
-                        onChange={(e) =>
-                          handleItemChange(idx, "cost", e.target.value)
-                        }
-                        className="w-20 border-b border-ink-200 bg-transparent pb-0.5 font-semibold text-ink-900 focus:border-brand-600 focus:outline-none"
-                      />
-                    </td>
-                    <td className="py-2.5 pr-2 font-bold text-ink-900">
-                      ₹{" "}
-                      {Number(row.totalAmount || 0).toLocaleString("en-IN", {
-                        minimumFractionDigits: 2,
-                      })}
-                    </td>
-                    <td className="py-2.5 text-right">
-                      {items.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemovePartRow(idx)}
-                          className="text-ink-400 transition-colors hover:text-danger-500"
-                          title="Remove row"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-3 flex justify-end border-t border-ink-100 pt-3">
-            <Button
-              type="button"
-              size="sm"
-              icon={Plus}
-              onClick={handleAddPartRow}
-              disabled={!selectedVendor}
-            >
-              Add Part
+    <>
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Add GRN"
+        size="xl"
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              Cancel
             </Button>
+            <Button
+              type="submit"
+              form="add-auto-grn-form"
+              isLoading={isSubmitting}
+            >
+              {isSubmitting ? "Submitting..." : "Submit"}
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="add-auto-grn-form"
+          onSubmit={handleSubmit}
+          className="space-y-5"
+        >
+          {/* Grand Total */}
+          <div className="max-w-xs">
+            <Input
+              label="Grand Total"
+              required
+              variant="underline"
+              value={formData.grandTotal}
+              onChange={(e) => handleChange("grandTotal", e.target.value)}
+              className="text-base font-bold"
+            />
           </div>
-        </div>
-      </form>
-    </Modal>
+
+          {/* Form Fields - 3 column grid */}
+          <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-3">
+            <div className="-mt-2.5">
+              <SingleSelect
+                label="GRN Name"
+                required
+                value={formData.grnName}
+                onChange={(value) => handleChange("grnName", value)}
+                options={GRN_NAME_OPTIONS}
+                error={errors.grnName}
+              />
+            </div>
+
+            {/* Vendor Code - MUI Autocomplete, fetches from grnApi.getVendor */}
+            <div>
+              <Autocomplete
+                options={vendorOptions}
+                value={selectedVendor}
+                onChange={(_, vendor) => handleVendorChange(vendor)}
+                inputValue={vendorInput}
+                onInputChange={(_, value) => setVendorInput(value)}
+                getOptionLabel={(option) => option?.vendorCode ?? ""}
+                isOptionEqualToValue={(option, val) => option.id === val.id}
+                filterOptions={(x) => x} // filtering is done by the API
+                loading={isVendorLoading}
+                noOptionsText={
+                  vendorInput.trim() ? "No vendors found" : "Type to search"
+                }
+                // Portal + high z-index so the list isn't clipped by the modal body
+                componentsProps={{ popper: { style: { zIndex: 9999 } } }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Vendor Code"
+                    required
+                    variant="standard"
+                    error={!!errors.vendorCode}
+                    helperText={errors.vendorCode || ""}
+                    fullWidth
+                    InputProps={{
+                      ...params.InputProps,
+                      endAdornment: (
+                        <>
+                          {isVendorLoading ? (
+                            <CircularProgress color="inherit" size={16} />
+                          ) : null}
+                        </>
+                      ),
+                    }}
+                  />
+                )}
+              />
+            </div>
+
+            <Input
+              label="Supplier Invoice Number"
+              required
+              variant="underline"
+              value={formData.supplierInvoiceNumber}
+              onChange={(e) =>
+                handleChange("supplierInvoiceNumber", e.target.value)
+              }
+              placeholder="e.g. CSCR-VLR-0010"
+              error={errors.supplierInvoiceNumber}
+            />
+
+            <Input
+              type="date"
+              label="Invoice Date"
+              variant="underline"
+              value={formData.invoiceDate}
+              onChange={(e) => handleChange("invoiceDate", e.target.value)}
+            />
+            <Input
+              type="number"
+              step="0.01"
+              label="Invoice Amount"
+              variant="underline"
+              value={formData.invoiceAmount}
+              onChange={(e) => handleChange("invoiceAmount", e.target.value)}
+              placeholder="0.00"
+            />
+            <Input
+              label="ESugam Road Permit Number"
+              variant="underline"
+              value={formData.eSugamNumber}
+              onChange={(e) => handleChange("eSugamNumber", e.target.value)}
+              placeholder="e.g. ESUGAM-99201"
+            />
+
+            <Input
+              label="LR Number"
+              variant="underline"
+              value={formData.lrNumber}
+              onChange={(e) => handleChange("lrNumber", e.target.value)}
+              placeholder="e.g. LR-89201"
+            />
+            <Input
+              type="date"
+              label="LR Date"
+              variant="underline"
+              value={formData.lrDate}
+              onChange={(e) => handleChange("lrDate", e.target.value)}
+            />
+            <Input
+              label="Transport Name"
+              variant="underline"
+              value={formData.transportName}
+              onChange={(e) => handleChange("transportName", e.target.value)}
+              placeholder="e.g. SafeXpress Logistics"
+            />
+
+            <Input
+              type="number"
+              step="0.01"
+              label="Freight Charges"
+              variant="underline"
+              value={formData.freightCharges}
+              onChange={(e) => handleChange("freightCharges", e.target.value)}
+              placeholder="0.00"
+            />
+            <Input
+              type="number"
+              step="0.01"
+              label="Miscellaneous Charges"
+              variant="underline"
+              value={formData.miscellaneousCharges}
+              onChange={(e) =>
+                handleChange("miscellaneousCharges", e.target.value)
+              }
+              placeholder="0.00"
+            />
+          </div>
+
+          {/* Parts Line Items - a free-form editable grid, which the
+              shared Table component doesn't support, so this stays
+              hand-built rather than forced into it. */}
+          <div className="rounded-xl border border-ink-100 bg-white p-3 shadow-xs">
+            {errors.items && (
+              <p className="mb-2 text-xs text-danger-500">{errors.items}</p>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-ink-100 text-ink-500">
+                    <th className="pb-2 font-semibold">Parts No</th>
+                    <th className="pb-2 font-semibold">Description</th>
+                    <th className="pb-2 font-semibold">PO Number</th>
+                    <th className="pb-2 font-semibold">Sup Inv Qty</th>
+                    <th className="pb-2 font-semibold">Received Qty</th>
+                    <th className="pb-2 font-semibold">Cost</th>
+                    <th className="pb-2 font-semibold">Bin Location</th>
+                    <th className="pb-2 font-semibold text-brand-700">
+                      Total Amount
+                    </th>
+                    <th className="w-8 pb-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-50">
+                  {items.map((row, idx) => (
+                    <tr key={row.rowId} className="hover:bg-ink-50/50">
+                      <td className="py-2.5 pr-2">
+                        <PartNoAutocomplete
+                          value={row.partNo}
+                          disabled={!selectedVendor}
+                          onSelect={(option) => handlePartSelect(idx, option)}
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <input
+                          type="text"
+                          value={row.description}
+                          readOnly
+                          className="w-44 truncate border-b border-ink-200 bg-transparent pb-0.5 font-medium text-ink-800 focus:outline-none"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <input
+                          type="text"
+                          value={row.poNumber}
+                          onChange={(e) =>
+                            handleItemChange(idx, "poNumber", e.target.value)
+                          }
+                          className="w-20 border-b border-ink-200 bg-transparent pb-0.5 font-semibold text-brand-700 focus:border-brand-600 focus:outline-none"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <input
+                          type="number"
+                          min="1"
+                          value={row.supInvQty}
+                          onChange={(e) =>
+                            handleItemChange(idx, "supInvQty", e.target.value)
+                          }
+                          className="w-14 border-b border-ink-200 bg-transparent pb-0.5 text-center text-ink-800 focus:border-brand-600 focus:outline-none"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <input
+                          type="number"
+                          min="1"
+                          value={row.receivedQty}
+                          onChange={(e) =>
+                            handleItemChange(idx, "receivedQty", e.target.value)
+                          }
+                          className="w-14 border-b border-ink-200 bg-transparent pb-0.5 text-center text-ink-800 focus:border-brand-600 focus:outline-none"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={row.cost}
+                          onChange={(e) =>
+                            handleItemChange(idx, "cost", e.target.value)
+                          }
+                          className="w-20 border-b border-ink-200 bg-transparent pb-0.5 font-semibold text-ink-900 focus:border-brand-600 focus:outline-none"
+                        />
+                      </td>
+                      <td className="py-2.5 pr-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={isBinsComplete(row) ? "primary" : "secondary"}
+                          disabled={!row.itemId}
+                          onClick={() => setBinRowId(row.rowId)}
+                        >
+                          {isBinsComplete(row) ? "Selected" : "Select"}
+                        </Button>
+                      </td>
+                      <td className="py-2.5 pr-2 font-bold text-ink-900">
+                        ₹{" "}
+                        {Number(row.totalAmount || 0).toLocaleString("en-IN", {
+                          minimumFractionDigits: 2,
+                        })}
+                      </td>
+                      <td className="py-2.5 text-right">
+                        {items.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePartRow(idx)}
+                            className="text-ink-400 transition-colors hover:text-danger-500"
+                            title="Remove row"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-3 flex justify-end border-t border-ink-100 pt-3">
+              <Button
+                type="button"
+                size="sm"
+                icon={Plus}
+                onClick={handleAddPartRow}
+                disabled={!selectedVendor}
+              >
+                Add Part
+              </Button>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      <BinLocationModal
+        isOpen={binRowId !== null}
+        onClose={() => setBinRowId(null)}
+        row={items.find((it) => it.rowId === binRowId)}
+        onSave={handleSaveBins}
+      />
+    </>
   );
 }

@@ -7,6 +7,7 @@ import {
   ShoppingCart,
   ScanLine,
   Plus,
+  Pencil
 } from "lucide-react";
 import Card from "@/components/ui/Card";
 import Input from "@/components/ui/Input";
@@ -24,6 +25,7 @@ import GrnDirectFilterModal from "@/components/parts/GrnDirectFilterModal";
 import { grnApi } from "@/services/api/grnApi";
 import jsPDF from "jspdf";
 import mytvslogo from "../../../assets/images/tvslogo.png"
+import EditGrnModal from "./EditGrnModal";
 
 const SEARCH_DEBOUNCE_MS = 400;
 
@@ -54,6 +56,8 @@ export default function GrnDirect() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
+const [editingGrn, setEditingGrn] = useState(null);
+const [isUpdating, setIsUpdating] = useState(false);
   // Debounce the search box so it doesn't refetch on every keystroke.
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -140,12 +144,14 @@ export default function GrnDirect() {
         status: 1,
       },
       grnparts,
-      bindata: items
-        .filter((it) => it.binId)
-        .map((it) => ({
-          binid: Number(it.binId),
-          quantity: num(it.receivedQty),
-        })),
+      bindata: items.flatMap((it) =>
+      (it.bins ?? []).map((b) => ({
+        binid: Number(b.binId),
+        quantity: num(b.quantity),
+        item_id: it.itemId,
+        item_code: it.partNo,
+      })),
+    ),
     };
 
     setIsSubmitting(true);
@@ -575,6 +581,12 @@ Authorized Signature
                   onClick={() => setViewingGrn(row)}
                 />
                 <IconAction
+  icon={Pencil}
+  label="Edit GRN"
+  tone="brand"
+  onClick={() => setEditingGrn(row)}
+/>
+                <IconAction
                   icon={ScanLine}
                   label="Scan Barcode"
                   tone="assign"
@@ -603,6 +615,56 @@ Authorized Signature
       : []),
   ];
 
+  const toGrnPart = (it) => {
+  const qty = num(it.receivedQty);
+  const cost = num(it.cost);
+  const total = num(it.totalAmount);
+  const gst = total - cost * qty;
+  return {
+    item_id: it.itemId ?? 0,
+    item_code: it.partNo,
+    item_description: it.description,
+    sup_invoice_quantity: num(it.supInvQty),
+    quantity: qty,
+    rate: cost,
+    cost,
+    mrp: num(it.mrp),
+    discount: num(it.discount),
+    binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
+    cgst: gst / 2,
+    sgst: gst / 2,
+    igst: 0,
+    total,
+    binid: it.binId ?? 0,
+  };
+};
+
+async function handleUpdateGrn({ id, newItems }) {
+  const payload = {
+    grn_id: id,
+    grnparts: newItems.map(toGrnPart), // only the newly added rows
+     bindata: newItems.flatMap((it) =>
+      (it.bins ?? []).map((b) => ({
+        binid: Number(b.binId),
+        quantity: num(b.quantity),
+        item_id: it.itemId,
+        item_code: it.partNo,
+      })),
+    ),
+  };
+
+  setIsUpdating(true);
+  try {
+    await grnApi.updateGrn(payload); // <-- confirm the real endpoint name
+    showToast.success("GRN updated successfully");
+    setEditingGrn(null);
+    loadData();
+  } catch (err) {
+    showToast.error(err.message || "Failed to update GRN");
+  } finally {
+    setIsUpdating(false);
+  }
+}
  
   return (
     <div className="space-y-4">
@@ -690,6 +752,13 @@ Authorized Signature
         onClose={() => setViewingGrn(null)}
         grn={viewingGrn}
       />
+      <EditGrnModal
+  isOpen={Boolean(editingGrn)}
+  onClose={() => setEditingGrn(null)}
+  grn={editingGrn}
+  onSubmit={handleUpdateGrn}
+  isSubmitting={isUpdating}
+/>
 
       <GrnDirectFilterModal
   isOpen={isFilterOpen}
