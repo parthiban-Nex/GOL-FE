@@ -37,7 +37,7 @@ export default function AttendanceTab() {
 
 
 function RegularisationCard({ onAttendanceUpdated }) {
-  const [date, setDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(() => new Date().toLocaleDateString("en-CA"));
   const [type, setType] = useState("Forgot Punch");
   const [reason, setReason] = useState("");
   const [pendingCount, setPendingCount] = useState(0);
@@ -139,7 +139,14 @@ function RegularisationCard({ onAttendanceUpdated }) {
 
     try {
       setSubmitting(true);
-      const regDate = date || new Date().toISOString().split("T")[0];
+      const regDate = date || new Date().toLocaleDateString("en-CA");
+      const todayStr = new Date().toLocaleDateString("en-CA");
+
+      if (regDate > todayStr) {
+        showToast.warning("Regularisation date cannot be in the future. Please select a past or current date.");
+        setSubmitting(false);
+        return;
+      }
 
       let res;
       if (attachment) {
@@ -215,6 +222,7 @@ function RegularisationCard({ onAttendanceUpdated }) {
           type="date"
           label="Date"
           value={date}
+          max={new Date().toLocaleDateString("en-CA")}
           onChange={(e) => setDate(e.target.value)}
         />
 
@@ -228,6 +236,7 @@ function RegularisationCard({ onAttendanceUpdated }) {
         <Input
           label="Reason"
           value={reason}
+          required
           onChange={(e) => setReason(e.target.value)}
           placeholder="Enter reason for regularization..."
         />
@@ -424,7 +433,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
       cur.map((r) => {
         if (r.id === row.id || r.employeeId === row.id) {
           const nextMark = r.mark === key ? "" : key;
-          return { ...r, mark: nextMark, isDirty: true };
+          return { ...r, mark: nextMark, notes: "", isDirty: true };
         }
         return r;
       }),
@@ -433,13 +442,20 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
 
   function handleConfirmRemarks() {
     if (!activeRow) return;
+    const trimmed = remarksText.trim();
+    if (!trimmed) {
+      showToast.warning(
+        `Remarks are mandatory for ${activeStatusKey === "OD" ? "On Duty (OD)" : "Duty Rest (DR)"}.`,
+      );
+      return;
+    }
     setRows((cur) =>
       cur.map((r) => {
         if (r.id === activeRow.id || r.employeeId === activeRow.id) {
           return {
             ...r,
             mark: activeStatusKey,
-            notes: remarksText.trim(),
+            notes: trimmed,
             isDirty: true,
           };
         }
@@ -462,6 +478,16 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
   async function saveAll() {
     if (modifiedRecords.length === 0) {
       showToast.warning("No new attendance marks to save.");
+      return;
+    }
+
+    const missingRemarks = modifiedRecords.find(
+      (r) => (r.mark === "OD" || r.mark === "DR") && (!r.notes || !r.notes.trim()),
+    );
+    if (missingRemarks) {
+      showToast.warning(
+        `Remarks are mandatory for ${missingRemarks.name || missingRemarks.id} marked as ${missingRemarks.mark === "OD" ? "On Duty (OD)" : "Duty Rest (DR)"}.`,
+      );
       return;
     }
 
@@ -691,7 +717,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
               rows={3}
               value={remarksText}
               onChange={(e) => setRemarksText(e.target.value)}
-              placeholder="Enter remarks..."
+              placeholder={`Enter mandatory remarks for ${activeStatusKey === "OD" ? "On Duty (OD)" : "Duty Rest (DR)"}...`}
               className="w-full rounded-md border border-ink-200 p-2 text-xs text-ink-800 placeholder-ink-400 focus:outline-none focus:ring-1 focus:ring-brand-500"
             />
           </div>
