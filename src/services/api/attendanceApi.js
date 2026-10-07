@@ -6,7 +6,10 @@ import { axiosClient } from "@/services";
  */
 export const attendanceApi = {
    getEmployees(params = {}) {
-    return axiosClient.get("/attendance/employees", { params });
+    return axiosClient.get("/attendance/employees", {
+      params: { ...params, _t: Date.now() },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
   },
 
   submitRegularisation(payload) {
@@ -17,7 +20,10 @@ export const attendanceApi = {
   },
 
   getTodayMarkList(params = {}) {
-    return axiosClient.get("/attendance/mark", { params });
+    return axiosClient.get("/attendance/mark", {
+      params: { ...params, _t: Date.now() },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
   },
 
   saveMarks(payload) {
@@ -25,11 +31,17 @@ export const attendanceApi = {
   },
 
   getAnalytics(params = {}) {
-    return axiosClient.get("/attendance/analytics", { params });
+    return axiosClient.get("/attendance/analytics", {
+      params: { ...params, _t: Date.now() },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
   },
 
   getDetailsTable(params = {}) {
-    return axiosClient.get("/attendance/details", { params });
+    return axiosClient.get("/attendance/details", {
+      params: { ...params, _t: Date.now() },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
   },
    exportAnalytics(params = {}) {
     return axiosClient.get("/attendance/analytics/export", {

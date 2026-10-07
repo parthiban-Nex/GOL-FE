@@ -15,7 +15,7 @@ import {
   ATTENDANCE_DETAILS_RANGE,
   avatarColor,
 } from "@/pages/attendance/mockAttendance";
-import { attendanceApi } from "@/services/api/attendanceApi";
+import { attendanceApi } from "@/services";
 import { showToast } from "@/utils/toast";
 
 export default function AttendanceTab() {
@@ -365,6 +365,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
       setLoading(true);
       const res = await attendanceApi.getTodayMarkList({
         date: selectedDate,
+        shift: shiftFilter === "All Shifts" ? undefined : shiftFilter,
       });
       if (res && res.requestSuccessful) {
         const data = Array.isArray(res.data) ? res.data : [];
@@ -387,7 +388,7 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, shiftFilter]);
 
   useEffect(() => {
     fetchTodayList();
@@ -509,7 +510,12 @@ function MarkAttendanceCard({ onAttendanceUpdated, refreshKey }) {
         showToast.success(
           `Attendance marks saved successfully for ${payloadRecords.length} employees.`,
         );
-        fetchTodayList();
+        setRows((cur) =>
+          cur.map((r) =>
+            r.mark && !r.isFrozen ? { ...r, isFrozen: true, isDirty: false } : r
+          )
+        );
+        await fetchTodayList();
         if (onAttendanceUpdated) onAttendanceUpdated();
       } else {
         showToast.error(res?.message || "Failed to save attendance marks.");

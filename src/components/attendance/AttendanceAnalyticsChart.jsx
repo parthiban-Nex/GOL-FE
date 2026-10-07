@@ -7,7 +7,7 @@ import Input from "@/components/ui/Input";
 import {
   ANALYTICS_SUMMARY,
 } from "@/pages/attendance/mockAttendance";
-import { attendanceApi } from "@/services/api/attendanceApi";
+import { attendanceApi } from "@/services";
 import { showToast } from "@/utils/toast";
 
 const PERIOD_TABS = ["7D", "30D", "3M", "6M", "1Y"];
