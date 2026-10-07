@@ -1,1 +1,6 @@
+dist
 node_modules
+.env.production
+.env.development
+node_modules
+

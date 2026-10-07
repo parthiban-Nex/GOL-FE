@@ -8,6 +8,15 @@ npm run dev
 
 Then open the URL Vite prints (defaults to `http://localhost:5173`)
 
+## Module - Attendance
+## Summary of Changes
+- Employee under the outlet dropdown selector created for attendance regularisation
+- Dedicated OD/DR remarks popup modal implemented in mark attendance.
+- Dynamic date range filter with Excel report export functionality.
+- Daily mark attendance is one-time only; once submitted for the current day, the row freezes to prevent accidental overwrite.
+- Any subsequent modifications after initial submission must be processed via the Regularisation workflow.
+- All attendance updates made via Regularisation immediately sync and reflect across the mark list, analytics chart, and details table.
+
 #initial commit
 
 ## GRn Changes
