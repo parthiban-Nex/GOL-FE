@@ -1,264 +1,263 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
-import { partsApi } from "@/services";
-import { isSuccess, responseMessage } from "@/utils/apiResponse";
-import { mapGrnDetail } from "@/utils/grn";
-import { formatINR } from "@/utils/estimateMath";
+import { grnApi } from "@/services/api/grnApi";
+
+const money = (v) =>
+  Number(v || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <span className="block text-ink-500">{label}</span>
+      <span className="font-semibold text-ink-900">{children}</span>
+    </div>
+  );
+}
 
 /**
- * GRN Direct + Auto GRN "View Inward Note" - loads POST /parts/Grnpdf
- * { id } for the clicked list row.
+ * Loads the full GRN via grnApi.getGrnPdf({ id }) when opened.
+ * `grn` is the list row; only its `id` is needed (the rest is used as a
+ * fallback for the header while loading).
  */
 export default function ViewGrnModal({ isOpen, onClose, grn }) {
   const [detail, setDetail] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    if (!grn?.id) return;
-    setIsLoading(true);
-    setError("");
-    try {
-      const response = await partsApi.getGrnDetail(grn.id);
-      const mapped = isSuccess(response) ? mapGrnDetail(response) : null;
-      if (!mapped) {
-        setDetail(null);
-        setError(responseMessage(response, "Couldn't load the GRN."));
-        return;
-      }
-      setDetail(mapped);
-    } catch (err) {
-      setDetail(null);
-      setError(err.message || "Couldn't load the GRN.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [grn?.id]);
-
   useEffect(() => {
-    if (isOpen) load();
-    else setDetail(null);
-  }, [isOpen, load]);
+    if (!isOpen || !grn?.id) return;
+
+    let cancelled = false;
+    setDetail(null);
+    setError("");
+    setIsLoading(true);
+
+    (async () => {
+      try {
+        const res = await grnApi.getGrnPdf({ id: grn.id });
+        if (cancelled) return;
+        if (res?.requestSuccessful && res?.data?.[0]) {
+          setDetail(res.data[0]);
+        } else {
+          setError(res?.message || "Failed to load GRN details");
+        }
+      } catch (err) {
+        if (!cancelled) setError(err?.message || "Failed to load GRN details");
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, grn?.id]);
 
   if (!isOpen || !grn) return null;
 
   const d = detail;
-  const charges = d ? d.freightCharges + d.miscCharges : 0;
+  const vendor = d?.grnvendormap;
+  const parts = d?.grnparts ?? [];
+  const grnNo = d?.grn_no ?? grn.grn_no;
+  const vendorCode = d?.vendor_code ?? grn.vendor_code;
+  const poNumber = d?.pogrnmap?.po_number ?? "-";
+  const freightMisc = Number(d?.frieght_charges || 0) + Number(d?.mis_charges || 0);
+  const grandTotal =
+    d?.grand_total ?? Number(d?.pdf_total || 0) + freightMisc;
+
+  const vendorAddress = vendor
+    ? [
+        vendor.address1,
+        vendor.address2,
+        [vendor.city, vendor.pincode].filter(Boolean).join(" "),
+        vendor.state,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : "-";
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      size="xl"
+      size="lg"
       title={
         <div>
           <div className="flex items-center gap-2">
-            <span>Goods Receipt Note: {d?.grnNumber || grn.grnNumber}</span>
-            {d?.documentType && <Badge tone="brand">{d.documentType}</Badge>}
+            <span>Goods Receipt Note: {grnNo}</span>
+            {d?.document_type && (
+              <Badge tone="success" className="gap-1">
+                {d.document_type}
+              </Badge>
+            )}
           </div>
-          {d && (
-            <p className="mt-0.5 text-xs font-normal text-ink-500">
-              PO Number:{" "}
-              <span className="font-semibold text-brand-700">
-                {d.poNumber || "-"}
-              </span>{" "}
-              | Vendor Code:{" "}
-              <span className="font-semibold text-ink-800">
-                {d.vendorCode || "-"}
-              </span>
-            </p>
-          )}
+          <p className="mt-0.5 text-xs font-normal text-ink-500">
+            PO Number:{" "}
+            <span className="font-semibold text-brand-700">{poNumber}</span> |
+            Vendor Code:{" "}
+            <span className="font-semibold text-ink-800">{vendorCode}</span>
+          </p>
         </div>
       }
       footer={<Button onClick={onClose}>Close</Button>}
     >
-      {isLoading ? (
-        <p className="py-10 text-center text-sm text-ink-500">Loading GRN...</p>
-      ) : error ? (
-        <div className="py-10 text-center">
-          <p className="text-sm text-danger-500">{error}</p>
-          <button
-            type="button"
-            onClick={load}
-            className="mt-3 text-sm font-semibold text-brand-600 hover:underline cursor-pointer"
-          >
-            Try again
-          </button>
+      {isLoading && (
+        <div className="flex items-center justify-center gap-2 py-12 text-sm text-ink-500">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading GRN details...
         </div>
-      ) : !d ? null : (
-        <div className="space-y-5">
-          {/* Vendor + outlet */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <AddressBlock
-              title="Vendor"
-              lines={[
-                d.vendorCode,
-                d.vendorAddress,
-                d.vendorMobile && `Mobile: ${d.vendorMobile}`,
-              ]}
-            />
-            <AddressBlock
-              title="Received At"
-              lines={[
-                [d.outlet.name, d.outlet.branch && `(${d.outlet.branch})`]
-                  .filter(Boolean)
-                  .join(" "),
-                d.outlet.address,
-                d.outlet.gstin && `GSTIN: ${d.outlet.gstin}`,
-              ]}
-            />
-          </div>
+      )}
 
-          {/* Master details */}
+      {!isLoading && error && (
+        <p className="py-12 text-center text-sm text-danger-500">{error}</p>
+      )}
+
+      {!isLoading && !error && d && (
+        <>
+          {/* Master Details Grid */}
           <div className="grid grid-cols-2 gap-4 rounded-xl border border-ink-100 bg-ink-50/60 p-4 text-xs sm:grid-cols-4">
-            <Detail label="Supplier Invoice No" value={d.invoiceNumber} />
-            <Detail label="Invoice Date" value={d.invoiceDate} />
-            <Detail label="E-Sugam No" value={d.eSugamNo} />
-            <Detail label="Transport Name" value={d.transportName} />
-            <Detail label="LR Number" value={d.lrNumber} />
-            <Detail label="LR Date" value={d.lrDate} />
-            <Detail label="Freight / Misc" value={formatINR(charges)} />
-            <div>
-              <span className="block text-ink-500">Grand Total</span>
-              <span className="text-sm font-bold text-brand-700">
-                {formatINR(d.totals.grandTotal)}
+            <Field label="Vendor Code">{d.vendor_code || "-"}</Field>
+            <Field label="Supplier Invoice No">
+              {d.invoice_number || "-"}
+            </Field>
+            <Field label="Invoice Date">{d.invoice_date || "-"}</Field>
+            <Field label="Transport Name">{d.transport_name || "-"}</Field>
+            <Field label="LR Number">{d.lr_number || "-"}</Field>
+            <Field label="LR Date">{d.lr_date || "-"}</Field>
+            <Field label="E-Sugam / Road Permit No">
+              {d.e_sugam_no || "-"}
+            </Field>
+            <Field label="Mobile Number">{vendor?.mobileNumber || "-"}</Field>
+            <div className="col-span-2 sm:col-span-4">
+              <span className="block text-ink-500">Supplier Address</span>
+              <span className="font-semibold text-ink-900">
+                {vendorAddress}
               </span>
             </div>
           </div>
 
-          {/* Line items */}
-          <div>
+          {/* Items Table */}
+          <div className="mt-5">
             <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-700">
               Inward Line Items
             </h3>
             <div className="overflow-x-auto rounded-xl border border-ink-100">
-              <table className="w-full min-w-[760px] text-left text-xs">
+              <table className="w-full text-left text-xs">
                 <thead className="border-b border-ink-100 bg-ink-50/70 text-ink-600">
                   <tr>
                     <th className="px-4 py-2.5 font-semibold">Part No</th>
                     <th className="px-4 py-2.5 font-semibold">Description</th>
-                    <th className="px-4 py-2.5 font-semibold">Bin</th>
+                    <th className="px-4 py-2.5 text-center font-semibold">
+                      Bin
+                    </th>
                     <th className="px-4 py-2.5 text-center font-semibold">
                       Qty
                     </th>
                     <th className="px-4 py-2.5 text-right font-semibold">
-                      Cost
+                      Cost (₹)
                     </th>
                     <th className="px-4 py-2.5 text-right font-semibold">
-                      Discount
+                      Discount (₹)
                     </th>
                     <th className="px-4 py-2.5 text-right font-semibold">
-                      Tax
+                      Tax (₹)
                     </th>
                     <th className="px-4 py-2.5 text-right font-semibold">
-                      Total
+                      Total Amount (₹)
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink-100">
-                  {d.items.length === 0 ? (
+                  {parts.length === 0 && (
                     <tr>
                       <td
                         colSpan={8}
                         className="px-4 py-6 text-center text-ink-500"
                       >
-                        No line items.
+                        No line items
                       </td>
                     </tr>
-                  ) : (
-                    d.items.map((it) => (
-                      <tr key={it.key} className="hover:bg-ink-50/40">
-                        <td className="px-4 py-2.5 font-semibold text-brand-700">
-                          {it.itemCode || "-"}
-                        </td>
-                        <td className="px-4 py-2.5 text-ink-800">
-                          {it.description || "-"}
-                        </td>
-                        <td className="px-4 py-2.5 text-ink-700">
-                          {it.binLocation || "-"}
-                        </td>
-                        <td className="px-4 py-2.5 text-center text-ink-700">
-                          {it.quantity}
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-ink-700">
-                          {formatINR(it.cost)}
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-ink-700">
-                          {formatINR(it.discount)}
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-ink-700">
-                          {formatINR(it.tax)}
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-bold text-ink-900">
-                          {formatINR(it.total)}
-                        </td>
-                      </tr>
-                    ))
                   )}
+                  {parts.map((it, idx) => (
+                    <tr key={`${it.item_code}-${idx}`} className="hover:bg-ink-50/40">
+                      <td className="px-4 py-2.5 font-semibold text-brand-700">
+                        {it.item_code}
+                      </td>
+                      <td className="px-4 py-2.5 text-ink-800">
+                        {it.item_description}
+                      </td>
+                      <td className="px-4 py-2.5 text-center text-ink-700">
+                        {it.binlocation || "-"}
+                      </td>
+                      <td className="px-4 py-2.5 text-center font-medium text-success-700">
+                        {it.quantity}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-ink-700">
+                        {money(it.cost)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-ink-700">
+                        {money(it.discount)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-ink-700">
+                        {money(it.tax)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-bold text-ink-900">
+                        {money(it.total)}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
-                <tfoot className="border-t border-ink-100 bg-ink-50/70 font-semibold text-ink-900">
-                  <tr>
-                    <td className="px-4 py-2.5" colSpan={3}>
-                      Total
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      {d.totals.quantity}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      {formatINR(d.totals.cost)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      {formatINR(d.totals.discount)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      {formatINR(d.totals.tax)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right">
-                      {formatINR(d.totals.grandTotal)}
-                    </td>
-                  </tr>
-                </tfoot>
               </table>
             </div>
+
+            {/* Totals */}
+            <div className="mt-3 ml-auto max-w-xs space-y-1 text-xs">
+              <div className="flex justify-between text-ink-600">
+                <span>Total Qty</span>
+                <span className="font-semibold text-ink-900">
+                  {d.total_quantity ?? 0}
+                </span>
+              </div>
+              <div className="flex justify-between text-ink-600">
+                <span>Total Cost</span>
+                <span className="font-semibold text-ink-900">
+                  ₹ {money(d.total_cost)}
+                </span>
+              </div>
+              <div className="flex justify-between text-ink-600">
+                <span>Total Discount</span>
+                <span className="font-semibold text-ink-900">
+                  ₹ {money(d.total_discount)}
+                </span>
+              </div>
+              <div className="flex justify-between text-ink-600">
+                <span>Total Tax</span>
+                <span className="font-semibold text-ink-900">
+                  ₹ {money(d.total_tax)}
+                </span>
+              </div>
+              <div className="flex justify-between text-ink-600">
+                <span>Freight / Misc</span>
+                <span className="font-semibold text-ink-900">
+                  ₹ {money(freightMisc)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-ink-100 pt-1.5 text-sm">
+                <span className="font-bold text-ink-700">Grand Total</span>
+                <span className="font-bold text-brand-700">
+                  ₹ {money(grandTotal)}
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </Modal>
-  );
-}
-
-function Detail({ label, value }) {
-  return (
-    <div>
-      <span className="block text-ink-500">{label}</span>
-      <span className="font-semibold text-ink-900">{value || "-"}</span>
-    </div>
-  );
-}
-
-function AddressBlock({ title, lines }) {
-  const shown = lines.filter(Boolean);
-  return (
-    <div className="rounded-xl border border-ink-100 p-4 text-xs">
-      <p className="mb-1.5 font-bold uppercase tracking-wider text-ink-500">
-        {title}
-      </p>
-      {shown.length === 0 ? (
-        <p className="text-ink-400">-</p>
-      ) : (
-        shown.map((line, i) => (
-          <p
-            key={i}
-            className={
-              i === 0 ? "text-sm font-semibold text-ink-900" : "text-ink-700"
-            }
-          >
-            {line}
-          </p>
-        ))
-      )}
-    </div>
   );
 }
