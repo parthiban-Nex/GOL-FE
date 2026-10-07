@@ -1,118 +1,282 @@
 import { axiosClient } from "@/services";
+import { env } from "@/config/env";
+
+function normalizePayload(params = {}) {
+  const payload = {};
+
+  Object.keys(params).forEach((key) => {
+    const val = params[key];
+    if (val !== null && val !== undefined && val !== "") {
+      if (Array.isArray(val)) {
+        const cleaned = val.filter((item) => item !== null && item !== undefined && item !== "");
+        if (cleaned.length > 0) {
+          payload[key] = cleaned;
+        }
+      } else {
+        payload[key] = val;
+      }
+    }
+  });
+
+  if (payload.make) {
+    if (Array.isArray(payload.make)) {
+      payload.makes = payload.make;
+      payload.makeName = payload.make[0];
+      payload.make = payload.make[0];
+    } else {
+      payload.makes = [payload.make];
+      payload.makeName = payload.make;
+    }
+  }
+
+  if (payload.model) {
+    if (Array.isArray(payload.model)) {
+      payload.models = payload.model;
+      payload.modelName = payload.model[0];
+      payload.model = payload.model[0];
+    } else {
+      payload.models = [payload.model];
+      payload.modelName = payload.model;
+    }
+  }
+
+  if (payload.aggregate || payload.category) {
+    const catVal = payload.aggregate || payload.category;
+    if (Array.isArray(catVal)) {
+      payload.aggregate = catVal;
+      payload.category = catVal[0];
+      payload.categories = catVal;
+    } else {
+      payload.aggregate = catVal;
+      payload.category = catVal;
+      payload.categories = [catVal];
+    }
+  }
+
+  if (payload.subAggregate || payload.subcategory) {
+    const subVal = payload.subAggregate || payload.subcategory;
+    if (Array.isArray(subVal)) {
+      payload.subAggregate = subVal;
+      payload.subcategory = subVal[0];
+      payload.subcategories = subVal;
+    } else {
+      payload.subAggregate = subVal;
+      payload.subcategory = subVal;
+      payload.subcategories = [subVal];
+    }
+  }
+
+  if (payload.variant) {
+    if (Array.isArray(payload.variant)) {
+      payload.variants = payload.variant;
+      payload.variant = payload.variant[0];
+    } else {
+      payload.variants = [payload.variant];
+    }
+  }
+
+  if (payload.fuelType || payload.fuel) {
+    const fVal = payload.fuelType || payload.fuel;
+    if (Array.isArray(fVal)) {
+      payload.fuels = fVal;
+      payload.fuelType = fVal[0];
+      payload.fuel = fVal[0];
+    } else {
+      payload.fuels = [fVal];
+      payload.fuelType = fVal;
+      payload.fuel = fVal;
+    }
+  }
+
+  if (payload.year) {
+    if (Array.isArray(payload.year)) {
+      payload.years = payload.year;
+      payload.year = String(payload.year[0]);
+    } else {
+      payload.years = [String(payload.year)];
+      payload.year = String(payload.year);
+    }
+  }
+
+  return payload;
+}
 
 export const catalogueApi = {
-  // ─── vehicle chain (used by all three pages) ───────────────────────────
-  getMakes(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/makes", { params });
-    return Promise.reject(new Error("catalogueApi.getMakes() not connected"));
+  // ─── Top 20 Cars ────────────────────────────────────────────────────────
+  getTop20Cars() {
+    return axiosClient.get("/catelog/top20cars");
   },
-  getModels(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/models", { params });
-    return Promise.reject(new Error("catalogueApi.getModels() not connected"));
-  },
-  getGenerations(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/generations", { params });
-    return Promise.reject(
-      new Error("catalogueApi.getGenerations() not connected"),
-    );
-  },
-  getVariants(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/variants", { params });
-    return Promise.reject(
-      new Error("catalogueApi.getVariants() not connected"),
-    );
-  },
-  getFuels(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/fuels", { params });
-    return Promise.reject(new Error("catalogueApi.getFuels() not connected"));
-  },
-  getYears(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/years", { params });
-    return Promise.reject(new Error("catalogueApi.getYears() not connected"));
+  addTop20Car(data) {
+    return axiosClient.post("/catelog/top20cars", data);
   },
 
-  // ─── categories / subcategories ────────────────────────────────────────
-  getCategories(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/categories", { params });
-    return Promise.reject(
-      new Error("catalogueApi.getCategories() not connected"),
-    );
-  },
-  getSubcategories(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/masters/subcategories", { params });
-    return Promise.reject(
-      new Error("catalogueApi.getSubcategories() not connected"),
-    );
+  // ─── Dynamic Master List filter (Make, Model, Generation, Variant, etc.) ──
+  getMasterList(body = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload(body));
   },
 
-  // ─── Vehicle number lookup (Global page - Vehicle Order mode) ─────────
-  lookupVehicle(regNo) {
-    // TODO: return axiosClient.get(`/tvs-partsmart/vehicle/${regNo}`);
-    return Promise.reject(
-      new Error("catalogueApi.lookupVehicle() not connected"),
-    );
+  getMakes(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "make",
+      ...params,
+    }));
+  },
+  getModels(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "model",
+      ...params,
+    }));
+  },
+  getGenerations(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "vehicleGeneration",
+      ...params,
+    }));
+  },
+  getVariants(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "variant",
+      ...params,
+    }));
+  },
+  getFuels(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "fuelType",
+      ...params,
+    }));
+  },
+  getYears(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "year",
+      ...params,
+    }));
+  },
+  getCategories(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "aggregate",
+      ...params,
+    }));
+  },
+  getBrands(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "brand",
+      ...params,
+    }));
+  },
+  getSubcategories(params = {}) {
+    return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
+      masterType: "subAggregate",
+      ...params,
+    }));
+  },
+
+  // ─── Vehicle number lookup (Vahan / Vehicle Resolve) ─────────────────────
+  lookupVehicle(registrationNumber) {
+    const cleanRegNo = String(registrationNumber || "").trim().toUpperCase();
+    return axiosClient.post("/catelog/vehicleResolve", {
+      registrationNumber: cleanRegNo,
+      vehicleNumber: cleanRegNo,
+    });
+  },
+  getVahanDetails(registrationNumber) {
+    const cleanRegNo = String(registrationNumber || "").trim().toUpperCase();
+    return axiosClient.get("/catelog/getVahanDetails", {
+      params: { registrationNumber: cleanRegNo },
+    });
   },
 
   // ─── Parts search / listing ────────────────────────────────────────────
+  getPartsList(filters = {}) {
+    return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
+  },
+  generalSearch(params = {}) {
+    let searchKey = "";
+    let customerCode = env.customerCode || "0046";
 
-  getTieredParts(filters) {
-    // TODO: return axiosClient.post("/tvs-partsmart/top20/parts", filters);
-    return Promise.reject(
-      new Error("catalogueApi.getTieredParts() not connected"),
-    );
+    if (typeof params === "string") {
+      searchKey = params;
+    } else if (params && typeof params === "object") {
+      searchKey = params.searchKey || params.query || params.search || params.partNumber || "";
+      if (params.customerCode) customerCode = params.customerCode;
+    }
+
+    const cleanKey = String(searchKey).trim();
+    const payload = {
+      searchKey: cleanKey,
+      customerCode: customerCode || "0046",
+    };
+
+    return axiosClient.post("/jobCards/partsmart/generalSearch", payload);
   },
-  /** Global page (Stock Order + Vehicle Order): flat parts list. */
-  getParts(filters) {
-    // TODO: return axiosClient.post("/tvs-partsmart/parts/search", filters);
-    return Promise.reject(new Error("catalogueApi.getParts() not connected"));
+  getTieredParts(filters = {}) {
+    return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
   },
-  /** MyTVS Parts: lubes / brake fluid / coolant catalogue. */
-  getLubes(filters) {
-    // TODO: return axiosClient.get("/lubes-products", { params: filters });
-    return Promise.reject(new Error("catalogueApi.getLubes() not connected"));
+  getParts(filters = {}) {
+    return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
+  },
+  getLubes(filters = {}) {
+    return axiosClient.get("/catelog/lubes-products", { params: filters });
+  },
+  getLubesProducts(params = {}) {
+    const queryParams = {
+      type: params.type || "LUBRICANTS",
+      skip: params.skip !== undefined ? Number(params.skip) : 0,
+      limit: params.limit !== undefined ? Number(params.limit) : 50,
+    };
+    if (params.search && String(params.search).trim() !== "") {
+      queryParams.search = String(params.search).trim();
+    }
+    return axiosClient.get("/catelog/LubesProducts/list", { params: queryParams });
   },
 
   // ─── Cart ──────────────────────────────────────────────────────────────
   getCart() {
-    // TODO: return axiosClient.get("/tvs-partsmart/cart");
-    return Promise.reject(new Error("catalogueApi.getCart() not connected"));
+    return axiosClient
+      .get(`/catelog/getCartItems?_t=${Date.now()}`)
+      .catch(() => axiosClient.get(`/catelog/getCart?_t=${Date.now()}`));
   },
   addToCart(payload) {
-    // TODO: return axiosClient.post("/tvs-partsmart/cart", payload);
-    return Promise.reject(new Error("catalogueApi.addToCart() not connected"));
+    return axiosClient.post("/catelog/addToCart", payload).catch(() => axiosClient.post("/catelog/cart", payload));
+  },
+  updateCartQty(part_number, action) {
+    return axiosClient.post("/catelog/updateQuantity", { part_number, action });
   },
   updateCartItem(cartId, payload) {
-    // TODO: return axiosClient.put(`/tvs-partsmart/cart/${cartId}`, payload);
-    return Promise.reject(
-      new Error("catalogueApi.updateCartItem() not connected"),
-    );
+    return axiosClient.put(`/catelog/cart/${cartId}`, payload);
   },
-  removeCartItem(cartId) {
-    // TODO: return axiosClient.delete(`/tvs-partsmart/cart/${cartId}`);
-    return Promise.reject(
-      new Error("catalogueApi.removeCartItem() not connected"),
-    );
+  removeCartItem(part_number) {
+    return axiosClient
+      .post("/catelog/removeItem", { part_number })
+      .catch(() => axiosClient.delete(`/catelog/cart/${part_number}`));
+  },
+  placeOrder(payload) {
+    return axiosClient
+      .post("/catelog/placeOrderNew", payload)
+      .catch(() => axiosClient.post("/catelog/cart/checkout", payload));
   },
   checkout(payload) {
-    // TODO: return axiosClient.post("/tvs-partsmart/cart/checkout", payload);
-    return Promise.reject(new Error("catalogueApi.checkout() not connected"));
+    return axiosClient
+      .post("/catelog/placeOrderNew", payload)
+      .catch(() => axiosClient.post("/catelog/cart/checkout", payload));
   },
 
   // ─── Orders ────────────────────────────────────────────────────────────
   getOrders(params) {
-    // TODO: return axiosClient.get("/tvs-partsmart/orders", { params });
-    return Promise.reject(new Error("catalogueApi.getOrders() not connected"));
+    return axiosClient
+      .get("/catelog/getOrderHistories", { params })
+      .catch(() => axiosClient.get("/catelog/orders", { params }));
+  },
+  getOrderHistories(params) {
+    return axiosClient
+      .get("/catelog/getOrderHistories", { params })
+      .catch(() => axiosClient.get("/catelog/orders", { params }));
   },
   getOrderDetails(enquiryNo) {
-    // TODO: return axiosClient.get(`/tvs-partsmart/orders/${enquiryNo}`);
-    return Promise.reject(
-      new Error("catalogueApi.getOrderDetails() not connected"),
-    );
+    return axiosClient.get(`/catelog/orders/${enquiryNo}`);
   },
   cancelOrder(enquiryNo, payload) {
-    // TODO: return axiosClient.post(`/tvs-partsmart/orders/${enquiryNo}/cancel`, payload);
-    return Promise.reject(
-      new Error("catalogueApi.cancelOrder() not connected"),
-    );
+    return axiosClient.post(`/catelog/orders/${enquiryNo}/cancel`, payload);
   },
 };
+
+
