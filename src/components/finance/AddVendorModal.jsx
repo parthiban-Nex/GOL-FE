@@ -1,17 +1,15 @@
 import { useEffect, useState } from "react";
-import { Building2, UploadCloud } from "lucide-react";
-import Modal from "@/components/ui/Modal";
-import Button from "@/components/ui/Button";
-import Input from "@/components/ui/Input";
-import Select from "@/components/ui/Select";
-import Textarea from "@/components/ui/Textarea";
+import { Building2, UploadCloud, X, FileCheck } from "lucide-react";
+import { Modal, Button, Input, Select, Textarea } from "@/components/ui";
 import {
   VENDOR_TYPE_OPTIONS,
   PAYMENT_TERMS_OPTIONS,
 } from "@/pages/finance/mockexpense";
+import { expenseApi } from "@/services";
 import { showToast } from "@/utils/toast";
 
 const EMPTY_VENDOR = {
+  vendorCode: "",
   name: "",
   type: "",
   paymentTerms: "",
@@ -22,24 +20,18 @@ const EMPTY_VENDOR = {
   address: "",
 };
 
-/**
- * "Add New Vendor" modal (Image 1). Single-column form with a mix of
- * full-width and paired fields. Only Vendor Name is required for now
- * so light garages can add a payee quickly and enrich the record later.
- *
- * TODO: BACKEND INTEGRATION - onSubmit returns the vendor object to
- * the parent; wire it to expenseApi.createVendor() when the backend
- * is live. The supporting-document dropzone is UI-only right now;
- * hook it up to expenseApi.uploadVendorDocument() alongside.
- */
 export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
   const [form, setForm] = useState(EMPTY_VENDOR);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
 
   useEffect(() => {
     if (isOpen) {
       setForm(EMPTY_VENDOR);
+      setSelectedFile(null);
       setErrors({});
+      setLoading(false);
     }
   }, [isOpen]);
 
@@ -47,17 +39,55 @@ export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
     setForm((f) => ({ ...f, [field]: value }));
   }
 
-  function handleSubmit() {
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        showToast.error("File size cannot exceed 10MB");
+        return;
+      }
+      setSelectedFile(file);
+    }
+  }
+
+  async function handleSubmit() {
     const nextErrors = {};
     if (!form.name.trim()) nextErrors.name = "Vendor name is required";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
 
-    onSubmit({
-      id: `V${Math.floor(100 + Math.random() * 900)}`,
-      ...form,
-    });
-    showToast.success(`Vendor "${form.name}" saved.`);
+    try {
+      setLoading(true);
+
+      const formData = new FormData();
+      if (form.vendorCode && form.vendorCode.trim()) {
+        formData.append("vendorCode", form.vendorCode.trim());
+      }
+      formData.append("vendorName", form.name.trim());
+      formData.append("vendorType", form.type || "");
+      formData.append("paymentTerms", form.paymentTerms || "");
+      formData.append("contactPerson", form.contactPerson || "");
+      formData.append("phone", form.phone || "");
+      formData.append("email", form.email || "");
+      formData.append("gst", form.gst || "");
+      formData.append("address", form.address || "");
+
+      if (selectedFile) {
+        formData.append("document", selectedFile);
+      }
+
+      const res = await expenseApi.createVendor(formData);
+      showToast.success(res?.message || `Vendor "${form.name}" saved.`);
+
+      if (onSubmit) {
+        onSubmit(res?.data || { ...form, id: res?.data?.id });
+      }
+      onClose();
+    } catch (err) {
+      showToast.error(err?.message || "Failed to save vendor");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -75,22 +105,33 @@ export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
       }
       footer={
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit}>Save Vendor</Button>
+          <Button onClick={handleSubmit} loading={loading} disabled={loading}>
+            Save Vendor
+          </Button>
         </div>
       }
     >
       <div className="space-y-4">
-        <Input
-          label="Vendor Name "
-          required
-          value={form.name}
-          onChange={(e) => update("name", e.target.value)}
-          placeholder="e.g. Bosch Auto Parts Pvt Ltd"
-          error={errors.name}
-        />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Input
+            label="Vendor Code"
+
+            value={form.vendorCode}
+            onChange={(e) => update("vendorCode", e.target.value)}
+            placeholder="e.g. EV001 (Optional)"
+          />
+          <Input
+            label="Vendor Name "
+            required
+            value={form.name}
+            onChange={(e) => update("name", e.target.value)}
+            placeholder="e.g. Bosch Auto Parts Pvt Ltd"
+            error={errors.name}
+          />
+        </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Select
@@ -149,20 +190,46 @@ export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
           />
         </div>
 
+        {/* Supporting Document upload hidden for now - will be enabled once cloud permissions are set */}
+        {/*
         <div>
           <p className="mb-1.5 text-sm font-medium text-ink-700">
             Supporting Document{" "}
             <span className="text-xs font-normal text-ink-500">(optional)</span>
           </p>
-          <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-ink-300 bg-ink-50/40 px-4 py-6 text-center hover:bg-ink-50">
-            <UploadCloud className="h-6 w-6 text-ink-400" />
-            <span className="text-sm text-ink-600">Click to upload</span>
-            <span className="text-[11px] text-ink-500">
-              GST Certificate, PAN, Business Registration · Max 10MB
-            </span>
-            <input type="file" className="hidden" />
-          </label>
+          {selectedFile ? (
+            <div className="flex items-center justify-between rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-sm">
+              <div className="flex items-center gap-2 text-ink-800">
+                <FileCheck className="h-4 w-4 text-emerald-600" />
+                <span className="font-medium">{selectedFile.name}</span>
+                <span className="text-xs text-ink-500">
+                  ({(selectedFile.size / 1024).toFixed(1)} KB)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedFile(null)}
+                className="cursor-pointer rounded p-1 text-ink-400 hover:bg-ink-100 hover:text-ink-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-ink-300 bg-ink-50/40 px-4 py-6 text-center hover:bg-ink-50">
+              <UploadCloud className="h-6 w-6 text-ink-400" />
+              <span className="text-sm text-ink-600">Click to upload</span>
+              <span className="text-[11px] text-ink-500">
+                GST Certificate, PAN, Business Registration · Max 10MB
+              </span>
+              <input
+                type="file"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+            </label>
+          )}
         </div>
+        */}
       </div>
     </Modal>
   );

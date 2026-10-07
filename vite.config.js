@@ -17,6 +17,14 @@ export default defineConfig({
   server: {
     port: 5173,
     open: true,
+    // proxy: {
+    //   "/api": {
+    //     target: 'http://localhost:7001',
+    //     changeOrigin: true,
+    //     secure: false, // Set to true if the target uses a valid SSL certificate
+
+    //   }
+    // }
   },
   build: {
     outDir: "dist",
