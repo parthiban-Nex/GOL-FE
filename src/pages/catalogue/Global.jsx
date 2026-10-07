@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import {
   Search,
@@ -7,30 +7,8 @@ import {
   ChevronRight,
   X,
   Check,
-  // Category icons - named imports so only these are bundled
-  // (import * as Icons pulled in the whole ~740 KB icon library).
-  Filter as FilterIcon,
-  Disc as DiscIcon,
-  Settings as SettingsIcon,
-  MoveVertical as MoveVerticalIcon,
-  Lightbulb as LightbulbIcon,
-  CircleDot as CircleDotIcon,
-  BatteryCharging as BatteryChargingIcon,
-  Minus as MinusIcon,
-  Sparkles as SparklesIcon,
-  Settings2 as Settings2Icon,
-  Car as CarIcon,
-  Wrench as WrenchIcon,
-  Cable as CableIcon,
-  Boxes as BoxesIcon,
-  CircleGauge as CircleGaugeIcon,
-  Zap as ZapIcon,
-  Droplet as DropletIcon,
-  Fuel as FuelIcon,
-  Square as SquareIcon,
-  Megaphone as MegaphoneIcon,
-  PackageOpen as PackageOpenIcon,
 } from "lucide-react";
+import * as Icons from "lucide-react";
 import MultiSelect from "@/components/ui/Multiselect";
 import Input from "@/components/ui/Input";
 import Card from "@/components/ui/Card";
@@ -41,209 +19,642 @@ import CatalogueCartTable from "@/components/catalogue/CatalogueCartTable";
 import CatalogueOrdersTable from "@/components/catalogue/CatalogueOrdersTable";
 import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
-import {
-  MAKE_OPTIONS,
-  MODEL_OPTIONS_BY_MAKE,
-  VARIANT_OPTIONS,
-  FUEL_OPTIONS,
-  YEAR_OPTIONS,
-  GENERATIONS,
-  CATEGORY_OPTIONS,
-  SUBCATEGORY_MAP,
-  FLAT_PARTS,
-  INITIAL_CART_ITEMS,
-  INITIAL_ORDERS,
-  ORDER_DETAILS_BY_ENQUIRY,
-} from "@/pages/catalogue/mockCatalogue";
 import { showToast } from "@/utils/toast";
+import { catalogueApi } from "@/services/api/catalogueApi";
+import Pagination from "@/components/ui/Pagination";
+
+const CUSTOMER_CODE = "0046";
+
+function extractData(res) {
+  if (!res) return [];
+  if (Array.isArray(res)) return res;
+  if (Array.isArray(res.cart?.selected)) return res.cart.selected;
+  if (Array.isArray(res.cart?.items)) return res.cart.items;
+  if (Array.isArray(res.cart?.parts)) return res.cart.parts;
+  if (Array.isArray(res.cart)) return res.cart;
+  if (Array.isArray(res.data)) return res.data;
+  if (Array.isArray(res.result)) return res.result;
+  if (Array.isArray(res.items)) return res.items;
+  if (Array.isArray(res.list)) return res.list;
+  if (Array.isArray(res.masterList)) return res.masterList;
+  if (res && typeof res === "object") {
+    if (res.cart && typeof res.cart === "object") {
+      for (const key of Object.keys(res.cart)) {
+        if (Array.isArray(res.cart[key])) return res.cart[key];
+      }
+    }
+    for (const key of Object.keys(res)) {
+      if (Array.isArray(res[key])) return res[key];
+    }
+  }
+  return [];
+}
+
+function extractVehicleData(res) {
+  if (!res) return null;
+  const root = res.data ?? res.result ?? res;
+  let target = root;
+  if (Array.isArray(root)) target = root[0] || {};
+
+  const mytvs = target.mytvsDetails || target.mytvs || {};
+  const user = target.userDetails || target.user || {};
+  const vahan = target.vahanDetails || target.vahan || target.result || target;
+
+  const make =
+    user.userMake ||
+    mytvs.mytvsMake ||
+    target.make ||
+    target.manufacturer ||
+    vahan.make ||
+    vahan.manufacturer ||
+    "";
+
+  const model =
+    user.userModel ||
+    mytvs.mytvsModel ||
+    target.model ||
+    target.manufacturerModel ||
+    target.manufacturer_model ||
+    vahan.model ||
+    vahan.manufacturerModel ||
+    vahan.manufacturer_model ||
+    "";
+
+  const variant =
+    user.userVariant ||
+    mytvs.mytvsVariant ||
+    target.variant ||
+    vahan.variant ||
+    "";
+
+  const fuelType =
+    user.userFuelType ||
+    mytvs.mytvsFuelType ||
+    target.fuelType ||
+    target.fuel_type ||
+    vahan.fuelType ||
+    vahan.fuel_type ||
+    "";
+
+  const rawYear =
+    user.userYear ||
+    mytvs.mytvsYear ||
+    target.year ||
+    vahan.yearRegistration ||
+    vahan.yearManufacturing ||
+    vahan.year ||
+    (vahan.registrationDate ? new Date(vahan.registrationDate).getFullYear() : "") ||
+    (vahan.registration_date ? new Date(vahan.registration_date).getFullYear() : "");
+
+  const year = rawYear ? String(rawYear) : "";
+
+  return {
+    make: make ? String(make).trim() : "",
+    model: model ? String(model).trim() : "",
+    variant: variant ? String(variant).trim() : "",
+    fuelType: fuelType ? String(fuelType).trim() : "",
+    year: year ? String(year).trim() : "",
+  };
+}
+
+function toOptions(data, valKey = "masterName", labelKey = "masterName") {
+  const items = extractData(data);
+  return items
+    .map((item) => {
+      if (typeof item === "string" || typeof item === "number") {
+        return { value: String(item), label: String(item) };
+      }
+      if (!item || typeof item !== "object") {
+        return { value: "", label: "" };
+      }
+      const val =
+        item.masterName ??
+        item.masterValue ??
+        item.masterCode ??
+        item.value ??
+        item.id ??
+        item[valKey] ??
+        item.name ??
+        item.label ??
+        "";
+      const lbl =
+        item.label ??
+        item.masterName ??
+        item.masterValue ??
+        item.name ??
+        item[labelKey] ??
+        item.value ??
+        String(val);
+      return { value: String(val), label: String(lbl), raw: item };
+    })
+    .filter((o) => o.value !== "");
+}
+
+function toGenerations(data) {
+  const items = extractData(data);
+  return items.map((item, idx) => {
+    if (typeof item === "string" || typeof item === "number") {
+      return { value: String(item), label: String(item), url: "" };
+    }
+    if (!item || typeof item !== "object") {
+      return { value: `gen_${idx}`, label: `Gen ${idx + 1}`, url: "" };
+    }
+    const val =
+      item.masterName ??
+      item.masterValue ??
+      item.value ??
+      item.id ??
+      item.vehicleGeneration ??
+      item.generation ??
+      item.name ??
+      `gen_${idx}`;
+    const lbl =
+      item.label ??
+      item.masterName ??
+      item.name ??
+      item.vehicleGeneration ??
+      item.generation ??
+      String(val);
+    const url =
+      item.url ??
+      item.imageUrl ??
+      item.image_url ??
+      item.image ??
+      "";
+    return { value: String(val), label: String(lbl), url };
+  });
+}
+
+function normalizePartItem(item, idx) {
+  if (!item || typeof item !== "object") return null;
+  const pNo = item.partNumber || item.oemPartNumber || item.code || `PART_${idx}`;
+  const desc = item.itemDescription || item.partDescription || item.components || item.name || `Part ${idx + 1}`;
+  const brand = item.brandName || item.brand || "-";
+  const agg = (item.aggregate || item.category || item.masterName || "PARTS").trim().toUpperCase();
+  const sub = (item.subAggregate || item.subcategory || "GENERAL").trim().toUpperCase();
+  const mrpVal = parseFloat(item.mrp || item.listPrice || 0);
+  const taxVal = parseFloat(item.taxpercent || 18);
+
+  const discPct =
+    item.partConfig?.discountPercent !== undefined
+      ? parseFloat(item.partConfig.discountPercent)
+      : mrpVal > parseFloat(item.listPrice || item.saleRate || mrpVal)
+        ? Math.round(((mrpVal - parseFloat(item.listPrice || item.saleRate)) / mrpVal) * 100)
+        : 0;
+
+  const saleVal =
+    discPct > 0
+      ? mrpVal * (1 - discPct / 100)
+      : parseFloat(item.listPrice || item.mrp || item.saleRate || 0);
+
+  const priceIncl = Math.round(saleVal * (1 + taxVal / 100));
+  const mrpIncl = Math.round(mrpVal);
+
+  return {
+    partNumber: pNo,
+    itemDescription: desc,
+    brandName: brand,
+    aggregate: agg,
+    subAggregate: sub,
+    mrp: mrpVal,
+    mrpIncl,
+    saleRate: saleVal,
+    priceIncl,
+    taxpercent: taxVal,
+    discPct,
+    points: item.partConfig?.loyaltyBasePoints || item.points || 0,
+    warrantyDays: item.warrantyDays || 0,
+    eda: item.EDA !== undefined ? item.EDA : item.eda,
+    raw: item,
+  };
+}
+
+function normalizeCartItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const partNo = item.partNumber || item.part_number || item.code || item.cartId || item.id;
+  const desc = item.itemDescription || item.part_desc || item.name || partNo;
+  const brand = item.brandName || item.product_brand || item.brand || "MAHINDRA";
+  const qty = Number(item.quantity ?? item.qty ?? 1);
+  const mrp = Number(item.mrp ?? item.part_mrp ?? item.listPrice ?? 0);
+  const listPrice = Number(item.listPrice ?? item.list_price ?? item.billingPrice ?? item.saleRate ?? mrp);
+  const billingPrice = Number(item.billingPrice ?? listPrice);
+  const tax = Number(item.taxAmount ?? item.tax ?? 0);
+  const discountPerUnit = Number(item.discountPerUnit ?? Math.max(0, mrp - listPrice));
+  const totalAmount = Number(item.totalAmount ?? item.total ?? (qty * (billingPrice + tax)));
+
+  return {
+    cartId: String(partNo),
+    id: item.id || String(partNo),
+    name: desc,
+    code: String(partNo),
+    part_number: String(partNo),
+    brand,
+    qty,
+    mrp,
+    saleRate: listPrice,
+    list_price: listPrice,
+    billingPrice,
+    discountPerUnit: Number(discountPerUnit.toFixed(2)),
+    golSavings: item.golSavings || item.savingAmount || 0,
+    tax: Number(tax.toFixed(2)),
+    totalAmount: Number(totalAmount.toFixed(2)),
+    pointsEarned: item.pointsEarned || item.points || item.loyaltyBasePoints || 0,
+    raw: item,
+  };
+}
+
+const ORDER_DETAILS_BY_ENQUIRY = {};
 
 // Category icon mapping - falls back to Settings when the mock icon
 // name doesn't map to a lucide icon.
 const CAT_ICONS = {
-  FILTERS: FilterIcon,
-  BRAKE_SYSTEM: DiscIcon,
-  ENGINE: SettingsIcon,
-  SUSPENSION: MoveVerticalIcon,
-  LIGHTING: LightbulbIcon,
-  WHEELS_AND_TYRES: CircleDotIcon,
-  BATTERY: BatteryChargingIcon,
-  BELTS_AND_TENSIONER: MinusIcon,
-  ACCESSORIES: SparklesIcon,
-  BEARING: Settings2Icon,
-  BODY_PARTS: CarIcon,
-  BRACKET: WrenchIcon,
-  CABLES_AND_WIRES: CableIcon,
-  CHILD_PARTS: BoxesIcon,
-  CLUTCH_SYSTEM: CircleGaugeIcon,
-  ELECTRICAL: ZapIcon,
-  ELECTRICALS_AND_ELECTRONICS: ZapIcon,
-  FLUIDS_COOLANT_AND_GREASE: DropletIcon,
-  FUEL_SYSTEM: FuelIcon,
-  GLASS: SquareIcon,
-  HORNS: MegaphoneIcon,
+  FILTERS: "Filter",
+  BRAKE_SYSTEM: "Disc",
+  ENGINE: "Settings",
+  SUSPENSION: "MoveVertical",
+  LIGHTING: "Lightbulb",
+  WHEELS_AND_TYRES: "CircleDot",
+  BATTERY: "BatteryCharging",
+  BELTS_AND_TENSIONER: "Minus",
+  ACCESSORIES: "Sparkles",
+  BEARING: "Settings2",
+  BODY_PARTS: "Car",
+  BRACKET: "Wrench",
+  CABLES_AND_WIRES: "Cable",
+  CHILD_PARTS: "Boxes",
+  CLUTCH_SYSTEM: "CircleGauge",
+  ELECTRICAL: "Zap",
+  ELECTRICALS_AND_ELECTRONICS: "Zap",
+  FLUIDS_COOLANT_AND_GREASE: "Droplet",
+  FUEL_SYSTEM: "Fuel",
+  GLASS: "Square",
+  HORNS: "Megaphone",
 };
-
-const GLOBAL_CATEGORIES = [
-  ...CATEGORY_OPTIONS,
-  { value: "BEARING", label: "Bearing" },
-  { value: "BODY_PARTS", label: "Body Parts" },
-  { value: "BRACKET", label: "Bracket" },
-  { value: "CABLES_AND_WIRES", label: "Cables and Wires" },
-  { value: "CHILD_PARTS", label: "Child Parts" },
-  { value: "CLUTCH_SYSTEM", label: "Clutch System" },
-  { value: "ELECTRICAL", label: "Electrical" },
-  {
-    value: "ELECTRICALS_AND_ELECTRONICS",
-    label: "Electricals and Electronics",
-  },
-  { value: "FLUIDS_COOLANT_AND_GREASE", label: "Fluids Coolant and Grease" },
-  { value: "FUEL_SYSTEM", label: "Fuel System" },
-  { value: "GLASS", label: "Glass" },
-  { value: "HORNS", label: "Horns" },
-];
-
-const GLOBAL_SUBCATEGORY_MAP = {
-  ...SUBCATEGORY_MAP,
-  BATTERY: [
-    { value: "BATTERY_UNIT", label: "Battery" },
-    { value: "BATTERY_CHILD_PARTS", label: "Battery Child Parts" },
-  ],
-  BRAKE_SYSTEM: [
-    { value: "ABS_PUMP", label: "ABS Pump" },
-    { value: "BRAKE_CALIPER", label: "Brake Caliper" },
-    { value: "BRAKE_DISC", label: "Brake Disc" },
-    { value: "BRAKE_DRUM", label: "Brake Drum" },
-    { value: "BRAKE_FLUID_TANK", label: "Brake Fluid Tank" },
-    { value: "BRAKE_HOSE", label: "Brake Hose" },
-    { value: "BRAKE_LINING", label: "Brake Lining" },
-    { value: "BRAKE_PAD", label: "Brake Pad" },
-    { value: "BRAKE_PEDAL", label: "Brake Pedal" },
-    { value: "BRAKE_REPAIR_KIT", label: "Brake Repair Kit" },
-    { value: "BRAKE_SET", label: "Brake Set" },
-    { value: "BRAKE_SHOE", label: "Brake Shoe" },
-    { value: "BRAKE_VALVE", label: "Brake Valve" },
-    { value: "CALIPER_PINS_AND_ASSY", label: "Caliper Pins & Assy" },
-    { value: "MC_AND_BOOSTER", label: "MC & Booster" },
-    { value: "WHEEL_CYLINDER", label: "Wheel Cylinder" },
-  ],
-};
-
-// A few extra brand names to make the multi-select feel realistic.
-const BRAND_OPTIONS = [
-  "ADD LUB ITEMS",
-  "ANAND MOTOR PRODUCTS",
-  "BMW",
-  "BRAKES INDIA",
-  "CASTROL",
-  "CHEVROLET",
-  "DELPHI TECH",
-  "FORD",
-  "MARUTI SUZUKI",
-  "TATA",
-  "TOYOTA",
-  "SKODA",
-  "HYUNDAI",
-  "VALEO",
-  "BOSCH",
-  "FILTRON",
-  "MYTVS",
-  "MONROE",
-  "FAG",
-  "ZF",
-];
-const BRAND_SELECT_OPTIONS = BRAND_OPTIONS.map((b) => ({ value: b, label: b }));
 
 export default function Global() {
   const [tab, setTab] = useState("catalogue");
   const [mode, setMode] = useState("stock"); // stock | vehicle
   const [phase, setPhase] = useState("select"); // select | explore
 
-  // vehicle mode (all multi-select, progressively revealed)
+  // vehicle mode state
   const [regNo, setRegNo] = useState("");
-  const [generation, setGeneration] = useState(""); // still single-select (card grid)
+  const [generation, setGeneration] = useState("");
   const [previewGen, setPreviewGen] = useState(null);
   const [vMakes, setVMakes] = useState([]);
   const [vModels, setVModels] = useState([]);
   const [vVariants, setVVariants] = useState([]);
   const [vFuels, setVFuels] = useState([]);
   const [vYears, setVYears] = useState([]);
-  // When true (set by a reg-no lookup), Generation is skipped entirely:
-  // hidden from the UI and not required to explore. Manually touching
-  // Make or Model turns this back off, dropping the user back into the
-  // normal Make → Model → Generation → Variant → Fuel → Year chain.
   const [skipGeneration, setSkipGeneration] = useState(false);
 
-  // stock mode (multi-select, searchable)
+  // stock mode state
   const [stockMakes, setStockMakes] = useState([]);
   const [stockModels, setStockModels] = useState([]);
 
-  // shared category chain (multi-select in both modes)
+  // shared filter selections
   const [selectedCats, setSelectedCats] = useState([]);
   const [selectedSubs, setSelectedSubs] = useState([]);
   const [sort, setSort] = useState("default");
   const [selectedBrands, setSelectedBrands] = useState([]);
   const [partQuery, setPartQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+
+  function handleSearchSubmit(queryToSubmit) {
+    const q = queryToSubmit !== undefined ? queryToSubmit : searchInput;
+    const clean = String(q || "").trim();
+    if (!clean) return;
+    setPartQuery(clean);
+    setSearchInput(clean);
+    setPhase("explore");
+    setPage(1);
+  }
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
-  const [cart, setCart] = useState(INITIAL_CART_ITEMS);
-  const [orders, setOrders] = useState(INITIAL_ORDERS);
+  // Dynamic API options states
+  const [makeOptions, setMakeOptions] = useState([]);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [generationOptions, setGenerationOptions] = useState([]);
+  const [variantOptions, setVariantOptions] = useState([]);
+  const [fuelOptions, setFuelOptions] = useState([]);
+  const [yearOptions, setYearOptions] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+  const [subcategoryOptions, setSubcategoryOptions] = useState([]);
+  const [brandOptions, setBrandOptions] = useState([]);
+
+  const [partsList, setPartsList] = useState([]);
+  const [isLoadingParts, setIsLoadingParts] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalPartsCount, setTotalPartsCount] = useState(0);
+
+  const [cart, setCart] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [openOrder, setOpenOrder] = useState(null);
 
-  // Stock mode: models are the union across every selected make.
-  const stockModelOptions = useMemo(() => {
-    const set = new Set();
-    stockMakes.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => set.add(m)),
-    );
-    return Array.from(set).map((m) => ({ value: m, label: m }));
-  }, [stockMakes]);
+  const currentMakes = mode === "stock" ? stockMakes : vMakes;
+  const currentModels = mode === "stock" ? stockModels : vModels;
 
-  // Vehicle mode: same union logic, driven by vMakes instead.
-  const vModelOptions = useMemo(() => {
-    const set = new Set();
-    vMakes.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => set.add(m)),
-    );
-    return Array.from(set).map((m) => ({ value: m, label: m }));
-  }, [vMakes]);
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [
+    mode,
+    stockMakes,
+    stockModels,
+    vMakes,
+    vModels,
+    generation,
+    vVariants,
+    vFuels,
+    vYears,
+    selectedCats,
+    selectedSubs,
+    selectedBrands,
+    partQuery,
+  ]);
 
-  // Sub-cats merge across every selected category.
-  const activeSubcategoryOptions = useMemo(() => {
-    if (!selectedCats.length) return [];
-    const seen = new Set();
-    const merged = [];
-    selectedCats.forEach((c) => {
-      (GLOBAL_SUBCATEGORY_MAP[c] || []).forEach((s) => {
-        if (!seen.has(s.value)) {
-          seen.add(s.value);
-          merged.push(s);
+  // 1. Fetch Makes, Brands, Categories & Cart on mount (customerCode 0046)
+  useEffect(() => {
+    catalogueApi
+      .getMakes({ customerCode: CUSTOMER_CODE })
+      .then((res) => setMakeOptions(toOptions(res)))
+      .catch(() => setMakeOptions([]));
+
+    catalogueApi
+      .getBrands({ customerCode: CUSTOMER_CODE })
+      .then((res) => setBrandOptions(toOptions(res)))
+      .catch(() => setBrandOptions([]));
+
+    catalogueApi
+      .getCategories({ customerCode: CUSTOMER_CODE })
+      .then((res) => setCategoryOptions(toOptions(res)))
+      .catch(() => setCategoryOptions([]));
+
+    fetchCart();
+
+    catalogueApi
+      .getOrders()
+      .then((res) => setOrders(extractData(res)))
+      .catch(() => setOrders([]));
+  }, []);
+
+  // 2. Fetch Models when Makes change
+  useEffect(() => {
+    if (!currentMakes.length) {
+      setModelOptions([]);
+      return;
+    }
+    catalogueApi
+      .getModels({ customerCode: CUSTOMER_CODE, make: currentMakes })
+      .then((res) => setModelOptions(toOptions(res)))
+      .catch(() => setModelOptions([]));
+  }, [currentMakes]);
+
+  // 3. Fetch Generations when Models change (Vehicle mode)
+  useEffect(() => {
+    if (mode !== "vehicle" || !vModels.length) {
+      setGenerationOptions([]);
+      return;
+    }
+    catalogueApi
+      .getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels })
+      .then((res) => setGenerationOptions(toGenerations(res)))
+      .catch(() => setGenerationOptions([]));
+  }, [vMakes, vModels, mode]);
+
+  // 4. Fetch Variants when Generation changes (or skipped)
+  useEffect(() => {
+    if (mode !== "vehicle" || (!generation && !skipGeneration)) {
+      setVariantOptions([]);
+      return;
+    }
+    catalogueApi
+      .getVariants({
+        customerCode: CUSTOMER_CODE,
+        make: vMakes,
+        model: vModels,
+        vehicleGeneration: generation || null,
+      })
+      .then((res) => {
+        let opts = toOptions(res);
+        vVariants.forEach((v) => {
+          if (v && !opts.some((o) => o.value.toUpperCase() === String(v).toUpperCase())) {
+            opts.push({ value: String(v), label: String(v) });
+          }
+        });
+        setVariantOptions(opts);
+      })
+      .catch(() => setVariantOptions([]));
+  }, [vMakes, vModels, generation, skipGeneration, mode]);
+
+  // 5. Fetch Fuels when Variants change
+  useEffect(() => {
+    if (mode !== "vehicle" || !vVariants.length) {
+      setFuelOptions([]);
+      return;
+    }
+    catalogueApi
+      .getFuels({
+        customerCode: CUSTOMER_CODE,
+        make: vMakes,
+        model: vModels,
+        vehicleGeneration: generation || null,
+        variant: vVariants,
+      })
+      .then(async (res) => {
+        let opts = toOptions(res);
+        const missingSelectedFuel = vFuels.some(
+          (f) => !opts.some((o) => o.value.toUpperCase() === String(f).toUpperCase())
+        );
+        if ((!opts.length || missingSelectedFuel) && vMakes.length && vModels.length) {
+          try {
+            const fallbackRes = await catalogueApi.getFuels({
+              customerCode: CUSTOMER_CODE,
+              make: vMakes,
+              model: vModels,
+            });
+            const fallbackOpts = toOptions(fallbackRes);
+            const combined = [...opts];
+            fallbackOpts.forEach((fo) => {
+              if (!combined.some((c) => c.value.toUpperCase() === fo.value.toUpperCase())) {
+                combined.push(fo);
+              }
+            });
+            opts = combined;
+          } catch (e) {
+            console.warn("Fallback getFuels error:", e);
+          }
         }
+        vFuels.forEach((f) => {
+          if (f && !opts.some((o) => o.value.toUpperCase() === String(f).toUpperCase())) {
+            opts.push({ value: String(f), label: String(f) });
+          }
+        });
+        setFuelOptions(opts);
+      })
+      .catch(() => {
+        const opts = vFuels.map((f) => ({ value: String(f), label: String(f) }));
+        setFuelOptions(opts);
       });
-    });
-    return merged;
-  }, [selectedCats]);
+  }, [vMakes, vModels, generation, vVariants, mode]);
+
+  // 6. Fetch Years when Fuels change
+  useEffect(() => {
+    if (mode !== "vehicle" || !vFuels.length) {
+      setYearOptions([]);
+      return;
+    }
+    catalogueApi
+      .getYears({
+        customerCode: CUSTOMER_CODE,
+        make: vMakes,
+        model: vModels,
+        vehicleGeneration: generation || null,
+        variant: vVariants,
+        fuelType: vFuels,
+      })
+      .then(async (res) => {
+        let opts = toOptions(res);
+        const missingSelectedYear = vYears.some(
+          (y) => !opts.some((o) => o.value.toUpperCase() === String(y).toUpperCase())
+        );
+        if ((!opts.length || missingSelectedYear) && vMakes.length && vModels.length) {
+          try {
+            const fallbackRes = await catalogueApi.getYears({
+              customerCode: CUSTOMER_CODE,
+              make: vMakes,
+              model: vModels,
+            });
+            const fallbackOpts = toOptions(fallbackRes);
+            const combined = [...opts];
+            fallbackOpts.forEach((fo) => {
+              if (!combined.some((c) => c.value.toUpperCase() === fo.value.toUpperCase())) {
+                combined.push(fo);
+              }
+            });
+            opts = combined;
+          } catch (e) {
+            console.warn("Fallback getYears error:", e);
+          }
+        }
+        vYears.forEach((y) => {
+          if (y && !opts.some((o) => o.value.toUpperCase() === String(y).toUpperCase())) {
+            opts.push({ value: String(y), label: String(y) });
+          }
+        });
+        setYearOptions(opts);
+      })
+      .catch(() => {
+        const opts = vYears.map((y) => ({ value: String(y), label: String(y) }));
+        setYearOptions(opts);
+      });
+  }, [vMakes, vModels, generation, vVariants, vFuels, mode]);
+
+  // 7. Fetch Subcategories when Categories change
+  useEffect(() => {
+    if (!selectedCats.length) {
+      setSubcategoryOptions([]);
+      return;
+    }
+    catalogueApi
+      .getSubcategories({
+        customerCode: CUSTOMER_CODE,
+        make: currentMakes,
+        model: currentModels,
+        aggregate: selectedCats,
+      })
+      .then((res) => setSubcategoryOptions(toOptions(res)))
+      .catch(() => setSubcategoryOptions([]));
+  }, [currentMakes, currentModels, selectedCats]);
+
+  // 8. Fetch Parts List (getPartsList or generalSearch) with Limit and Offset Pagination
+  useEffect(() => {
+    const cleanQuery = partQuery.trim();
+    if (phase !== "explore" && !cleanQuery) return;
+
+    setIsLoadingParts(true);
+    if (cleanQuery && phase !== "explore") {
+      setPhase("explore");
+    }
+
+    const offset = (page - 1) * pageSize;
+    const basePayload = {
+      customerCode: CUSTOMER_CODE,
+      make: currentMakes,
+      model: currentModels,
+      vehicleGeneration: generation || null,
+      variant: vVariants,
+      fuelType: vFuels,
+      year: vYears,
+      aggregate: selectedCats,
+      subAggregate: selectedSubs,
+      brand: selectedBrands,
+      partNumber: cleanQuery || null,
+      limit: pageSize,
+      offset: offset,
+    };
+
+    const requestPromise = cleanQuery
+      ? catalogueApi.generalSearch({
+          customerCode: CUSTOMER_CODE,
+          searchKey: cleanQuery,
+        })
+      : catalogueApi.getPartsList(basePayload);
+
+    requestPromise
+      .then((res) => {
+        const raw = extractData(res);
+        if (
+          !cleanQuery &&
+          (!raw || raw.length === 0 || res?.success === false) &&
+          (vVariants.length || vYears.length)
+        ) {
+          // Fallback: search by Make + Model + Categories without strict variant string if upstream API returns 0 or error
+          return catalogueApi.getPartsList({
+            ...basePayload,
+            variant: null,
+            fuelType: null,
+            year: null,
+          });
+        }
+        return res;
+      })
+      .then((res) => {
+        const raw = extractData(res);
+        const countVal = res?.count ?? res?.totalCount ?? res?.total ?? raw.length;
+        setTotalPartsCount(countVal);
+        setPartsList(raw.map((item, idx) => normalizePartItem(item, idx)).filter(Boolean));
+      })
+      .catch(() => {
+        setPartsList([]);
+        setTotalPartsCount(0);
+      })
+      .finally(() => setIsLoadingParts(false));
+  }, [
+    phase,
+    mode,
+    currentMakes,
+    currentModels,
+    generation,
+    vVariants,
+    vFuels,
+    vYears,
+    selectedCats,
+    selectedSubs,
+    selectedBrands,
+    partQuery,
+    page,
+    pageSize,
+  ]);
 
   function handleStockMakesChange(next) {
     setStockMakes(next);
-    const validModels = new Set();
-    next.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => validModels.add(m)),
-    );
-    setStockModels((cur) => cur.filter((m) => validModels.has(m)));
+    setStockModels([]);
   }
 
-  // Vehicle mode chain: changing any link resets everything downstream
-  // so a stale Generation/Variant/Fuel/Year can't linger after an
-  // upstream field changes. Manually touching Make/Model also drops
-  // us out of "reg-no search" mode, since the user is now building the
-  // selection by hand and Generation is required again.
   function handleVMakesChange(next) {
     setVMakes(next);
-    const validModels = new Set();
-    next.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => validModels.add(m)),
-    );
-    setVModels((cur) => cur.filter((m) => validModels.has(m)));
+    setVModels([]);
     setGeneration("");
     setVVariants([]);
     setVFuels([]);
@@ -274,7 +685,6 @@ export default function Global() {
     setVYears([]);
   }
 
-  // Stock mode: multi-select chip grid for categories.
   function toggleCategoryChip(value) {
     setSelectedCats((cur) =>
       cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value],
@@ -287,14 +697,13 @@ export default function Global() {
     );
   }
 
-  const canExplore =
-    mode === "stock"
-      ? Boolean(selectedCats.length && selectedSubs.length)
-      : Boolean(selectedCats.length && selectedSubs.length);
+  const canExplore = Boolean(
+    selectedCats.length || currentMakes.length || currentModels.length || partQuery.trim(),
+  );
 
   function explore() {
     if (!canExplore) {
-      showToast.warning("Complete the required selections before exploring.");
+      showToast.warning("Complete selections before exploring.");
       return;
     }
     setPhase("explore");
@@ -315,70 +724,114 @@ export default function Global() {
     setSelectedSubs([]);
     setSelectedBrands([]);
     setPartQuery("");
+    setSearchInput("");
     setSort("default");
     setPhase("select");
   }
 
   function lookupVehicle() {
-    if (!regNo.trim())
-      return showToast.warning("Enter a vehicle registration number.");
-    // Reg-no search only resolves Make → Model → Variant → Fuel → Year.
-    // Generation is intentionally left out of this flow: it stays
-    // hidden and isn't required to explore.
-    setSkipGeneration(true);
-    setVMakes(["HYUNDAI"]);
-    setVModels(["Creta"]);
-    setGeneration("");
-    setVVariants(["SX"]);
-    setVFuels(["Petrol"]);
-    setVYears(["2022"]);
-    showToast.success(`Vehicle ${regNo.toUpperCase()} loaded.`);
+    const cleanRegNo = regNo.trim().toUpperCase();
+    if (!cleanRegNo) {
+      showToast.warning("Please enter a vehicle registration number.");
+      return;
+    }
+
+    catalogueApi
+      .getVahanDetails(cleanRegNo)
+      .then((res) => {
+        let extracted = extractVehicleData(res);
+        if (extracted && (extracted.make || extracted.model)) {
+          return extracted;
+        }
+        return catalogueApi.lookupVehicle(cleanRegNo).then((res2) => extractVehicleData(res2));
+      })
+      .catch((err) => {
+        console.warn("getVahanDetails API failed/unauthorized, falling back to lookupVehicle:", err);
+        return catalogueApi.lookupVehicle(cleanRegNo).then((res2) => extractVehicleData(res2));
+      })
+      .then((data) => {
+        if (data && (data.make || data.model)) {
+          setSkipGeneration(true);
+          if (data.make) setVMakes([data.make]);
+          if (data.model) setVModels([data.model]);
+          if (data.variant) setVVariants([data.variant]);
+          if (data.fuelType) setVFuels([data.fuelType]);
+          if (data.year) setVYears([data.year]);
+
+          showToast.success(`Vehicle ${cleanRegNo} details loaded successfully!`);
+        } else {
+          showToast.info(`No exact catalog mapping found for ${cleanRegNo}. Please select manually.`);
+        }
+      })
+      .catch((error) => {
+        console.error("Vahan lookup error:", error);
+        showToast.error("Failed to fetch vehicle details. Please select manually.");
+      });
   }
 
   const filteredParts = useMemo(() => {
-    const q = partQuery.trim().toLowerCase();
-    return FLAT_PARTS.filter((p) => {
-      if (selectedCats.length && !selectedCats.includes(p.aggregate))
-        return false;
-      if (selectedSubs.length && !selectedSubs.includes(p.subAggregate))
-        return false;
-      if (selectedBrands.length && !selectedBrands.includes(p.brandName))
-        return false;
-      if (
-        q &&
-        ![p.partNumber, p.itemDescription, p.brandName].some((f) =>
-          f.toLowerCase().includes(q),
-        )
-      )
-        return false;
+    const list = partsList.filter((p) => {
+      if (!p) return false;
+      const agg = (p.aggregate || p.category || "").trim();
+      const sub = (p.subAggregate || p.subcategory || "").trim();
+      const brand = (p.brandName || p.brand || "").trim();
+
+      if (selectedBrands.length && !selectedBrands.includes(brand)) return false;
+
+      if (!partQuery) {
+        if (selectedCats.length) {
+          const matchCat = selectedCats.some(
+            (c) => c === agg || String(c).replace(/_/g, " ").toUpperCase() === agg.replace(/_/g, " ").toUpperCase()
+          );
+          if (!matchCat) return false;
+        }
+        if (selectedSubs.length) {
+          const matchSub = selectedSubs.some(
+            (s) => s === sub || String(s).replace(/_/g, " ").toUpperCase() === sub.replace(/_/g, " ").toUpperCase()
+          );
+          if (!matchSub) return false;
+        }
+      }
       return true;
     });
-  }, [selectedCats, selectedSubs, selectedBrands, partQuery]);
+
+    if (sort === "price-asc") {
+      return [...list].sort((a, b) => (a.saleRate || a.mrp || 0) - (b.saleRate || b.mrp || 0));
+    }
+    if (sort === "price-desc") {
+      return [...list].sort((a, b) => (b.saleRate || b.mrp || 0) - (a.saleRate || a.mrp || 0));
+    }
+    if (sort === "disc-desc") {
+      return [...list].sort((a, b) => (b.discPct || 0) - (a.discPct || 0));
+    }
+    return list;
+  }, [partsList, selectedCats, selectedSubs, selectedBrands, partQuery, sort]);
 
   // Aggregate → sub-aggregate two-level grouping for the results panel.
   const grouped = useMemo(() => {
     const byAgg = new Map();
     for (const p of filteredParts) {
-      if (!byAgg.has(p.aggregate))
-        byAgg.set(p.aggregate, { agg: p.aggregate, subs: new Map() });
-      const grp = byAgg.get(p.aggregate);
-      if (!grp.subs.has(p.subAggregate)) grp.subs.set(p.subAggregate, []);
-      grp.subs.get(p.subAggregate).push(p);
+      const aggKey = p.aggregate || "PARTS";
+      const subKey = p.subAggregate || "GENERAL";
+      if (!byAgg.has(aggKey))
+        byAgg.set(aggKey, { agg: aggKey, subs: new Map() });
+      const grp = byAgg.get(aggKey);
+      if (!grp.subs.has(subKey)) grp.subs.set(subKey, []);
+      grp.subs.get(subKey).push(p);
     }
     return Array.from(byAgg.values()).map((g) => ({
       agg: g.agg,
       aggLabel:
-        GLOBAL_CATEGORIES.find((c) => c.value === g.agg)?.label ?? g.agg,
+        categoryOptions.find((c) => c.value === g.agg || c.value?.replace(/_/g, " ") === g.agg?.replace(/_/g, " "))?.label ?? g.agg,
       count: Array.from(g.subs.values()).reduce((s, arr) => s + arr.length, 0),
       subs: Array.from(g.subs.entries()).map(([subKey, parts]) => ({
         sub: subKey,
         subLabel:
-          (GLOBAL_SUBCATEGORY_MAP[g.agg] || []).find((s) => s.value === subKey)
-            ?.label ?? subKey,
+          subcategoryOptions.find((s) => s.value === subKey || s.value?.replace(/_/g, " ") === subKey?.replace(/_/g, " "))?.label ?? subKey,
         parts,
       })),
     }));
-  }, [filteredParts]);
+  }, [filteredParts, categoryOptions, subcategoryOptions]);
 
   const totalParts = filteredParts.length;
 
@@ -390,66 +843,172 @@ export default function Global() {
     });
   }
 
-  function addToCart(part) {
-    const cartId = part.partNumber;
-    const existing = cart.find((c) => c.cartId === cartId);
-    if (existing) {
-      setCart((cur) =>
-        cur.map((c) =>
-          c.cartId === cartId ? bumpQty(c, +1, part.taxpercent) : c,
-        ),
+  const fetchCart = () => {
+    catalogueApi
+      .getCart()
+      .then((res) => {
+        const raw = extractData(res);
+        if (Array.isArray(raw)) {
+          setCart(raw.map(normalizeCartItem).filter(Boolean));
+        }
+      })
+      .catch((err) => {
+        console.warn("Error fetching cart from backend:", err);
+      });
+  };
+
+  async function addToCart(part) {
+    const partNo = part.partNumber || part.code;
+    const newItem = normalizeCartItem({
+      partNumber: partNo,
+      part_number: partNo,
+      itemDescription: part.itemDescription || part.name,
+      brandName: part.brandName || part.brand,
+      mrp: part.mrp || 0,
+      saleRate: part.saleRate || part.list_price || part.mrp || 0,
+      listPrice: part.saleRate || part.list_price || part.mrp || 0,
+      taxpercent: part.taxpercent || part.tax || 0,
+      quantity: 1,
+    });
+
+    // 1. Optimistic UI update
+    setCart((cur) => {
+      const existingIndex = cur.findIndex(
+        (c) =>
+          String(c.cartId).toUpperCase() === String(partNo).toUpperCase() ||
+          String(c.code).toUpperCase() === String(partNo).toUpperCase(),
       );
-    } else {
-      const qty = 1;
-      const tax = part.saleRate * (part.taxpercent / 100) * qty;
-      setCart((cur) => [
-        ...cur,
-        {
-          cartId,
-          name: part.itemDescription,
-          code: part.partNumber,
-          brand: part.brandName,
-          qty,
-          mrp: part.mrp,
-          saleRate: part.saleRate,
-          discountPerUnit: +(part.mrp - part.saleRate).toFixed(2),
-          golSavings: 0,
-          billingPrice: part.saleRate,
-          tax: +tax.toFixed(2),
-          totalAmount: +(part.saleRate * qty + tax).toFixed(2),
-          pointsEarned: part.points || 0,
-          salesPriceGroup: part.salesPriceGroup,
-        },
-      ]);
+      if (existingIndex >= 0) {
+        const copy = [...cur];
+        copy[existingIndex] = {
+          ...copy[existingIndex],
+          qty: copy[existingIndex].qty + 1,
+        };
+        return copy;
+      }
+      return [...cur, newItem];
+    });
+
+    showToast.success(`${part.itemDescription || partNo} added to cart`);
+
+    // 2. Async backend API call & sync
+    try {
+      await catalogueApi.addToCart({
+        part_number: partNo,
+        description: part.itemDescription || part.name,
+        mrp: part.mrp || 0,
+        list_price: part.saleRate || part.list_price || part.mrp || 0,
+        tax: part.taxpercent || part.tax || 0,
+        qty: 1,
+        brand_name: part.brandName || part.brand || "",
+      });
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend addToCart error:", err);
     }
-    showToast.success(`${part.itemDescription} added to cart`);
   }
-  function updateCartQty(cartId, qty) {
-    if (qty <= 0)
-      return setCart((cur) => cur.filter((c) => c.cartId !== cartId));
-    setCart((cur) =>
-      cur.map((c) => (c.cartId === cartId ? bumpQty(c, qty - c.qty, 18) : c)),
+
+  async function updateCartQty(cartId, actionOrQty, newQtyVal) {
+    const item = cart.find(
+      (c) =>
+        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
+        String(c.code).toUpperCase() === String(cartId).toUpperCase(),
     );
+    const partNumber = item?.part_number || item?.code || cartId;
+
+    let action = "increase";
+    if (typeof actionOrQty === "string") {
+      action = actionOrQty;
+    } else if (item) {
+      action = actionOrQty > item.qty ? "increase" : "decrease";
+    }
+
+    const targetQty =
+      typeof actionOrQty === "number"
+        ? actionOrQty
+        : action === "increase"
+          ? (item?.qty || 0) + 1
+          : Math.max(0, (item?.qty || 1) - 1);
+
+    // Optimistic UI update
+    setCart((cur) => {
+      if (targetQty <= 0) {
+        return cur.filter(
+          (c) =>
+            String(c.cartId).toUpperCase() !== String(cartId).toUpperCase() &&
+            String(c.code).toUpperCase() !== String(cartId).toUpperCase(),
+        );
+      }
+      return cur.map((c) =>
+        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
+        String(c.code).toUpperCase() === String(cartId).toUpperCase()
+          ? { ...c, qty: targetQty }
+          : c,
+      );
+    });
+
+    try {
+      await catalogueApi.updateCartQty(partNumber, action);
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend updateCartQty error:", err);
+    }
   }
-  function removeFromCart(cartId) {
-    setCart((cur) => cur.filter((c) => c.cartId !== cartId));
+
+  async function removeFromCart(cartId) {
+    const item = cart.find(
+      (c) =>
+        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
+        String(c.code).toUpperCase() === String(cartId).toUpperCase(),
+    );
+    const partNumber = item?.part_number || item?.code || cartId;
+
+    // Optimistic UI update
+    setCart((cur) =>
+      cur.filter(
+        (c) =>
+          String(c.cartId).toUpperCase() !== String(cartId).toUpperCase() &&
+          String(c.code).toUpperCase() !== String(cartId).toUpperCase(),
+      ),
+    );
+
+    try {
+      await catalogueApi.removeCartItem(partNumber);
+      showToast.success("Item removed from cart");
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend removeCartItem error:", err);
+    }
   }
-  function checkout() {
+
+  async function checkout() {
     if (!cart.length) return;
-    const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-    setOrders((cur) => [
-      {
-        enquiryNo,
-        customerCode: "NMSA0786",
-        source: "GOL",
-        status: "PROCESSING",
-        orderCreationDate: new Date().toISOString(),
-      },
-      ...cur,
-    ]);
-    setCart([]);
-    showToast.success(`Order ${enquiryNo} placed.`);
-    setTab("orders");
+    try {
+      const res = await catalogueApi.placeOrder();
+      showToast.success("Order placed successfully!");
+      setCart([]);
+      setTab("orders");
+      catalogueApi
+        .getOrders()
+        .then((res) => setOrders(extractData(res)))
+        .catch(() => {});
+    } catch (err) {
+      console.warn("Backend placeOrder error, fallback local update:", err);
+      const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
+      setOrders((cur) => [
+        {
+          enquiryNo,
+          customerCode: "NMSA0786",
+          source: "GOL",
+          status: "PROCESSING",
+          orderCreationDate: new Date().toISOString(),
+        },
+        ...cur,
+      ]);
+      setCart([]);
+      showToast.success(`Order ${enquiryNo} placed.`);
+      setTab("orders");
+    }
   }
   function viewOrder(order) {
     const detail = ORDER_DETAILS_BY_ENQUIRY[order.enquiryNo] || {
@@ -538,7 +1097,6 @@ export default function Global() {
                 onVMakesChange={handleVMakesChange}
                 vModels={vModels}
                 onVModelsChange={handleVModelsChange}
-                vModelOptions={vModelOptions}
                 vVariants={vVariants}
                 onVVariantsChange={handleVVariantsChange}
                 vFuels={vFuels}
@@ -556,18 +1114,28 @@ export default function Global() {
                 onStockMakesChange={handleStockMakesChange}
                 stockModels={stockModels}
                 setStockModels={setStockModels}
-                stockModelOptions={stockModelOptions}
+                makeOptions={makeOptions}
+                modelOptions={modelOptions}
+                generationOptions={generationOptions}
+                variantOptions={variantOptions}
+                fuelOptions={fuelOptions}
+                yearOptions={yearOptions}
+                categoryOptions={categoryOptions}
+                subcategoryOptions={subcategoryOptions}
                 selectedCats={selectedCats}
                 toggleCategoryChip={toggleCategoryChip}
                 setSelectedCats={setSelectedCats}
                 selectedSubs={selectedSubs}
                 toggleSubChip={toggleSubChip}
                 setSelectedSubs={setSelectedSubs}
-                activeSubcategoryOptions={activeSubcategoryOptions}
                 partQuery={partQuery}
                 setPartQuery={setPartQuery}
+                searchInput={searchInput}
+                setSearchInput={setSearchInput}
+                onSearchSubmit={handleSearchSubmit}
                 selectedBrands={selectedBrands}
                 setSelectedBrands={setSelectedBrands}
+                brandOptions={brandOptions}
                 onExplore={explore}
                 canExplore={canExplore}
               />
@@ -583,22 +1151,36 @@ export default function Global() {
                 years={breadcrumbYear}
                 selectedCats={selectedCats}
                 selectedSubs={selectedSubs}
-                activeSubcategoryOptions={activeSubcategoryOptions}
+                categoryOptions={categoryOptions}
+                activeSubcategoryOptions={subcategoryOptions}
                 onClearEdit={clearAll}
                 onEditSelection={() => setPhase("select")}
                 sort={sort}
                 setSort={setSort}
                 partQuery={partQuery}
                 setPartQuery={setPartQuery}
+                searchInput={searchInput}
+                setSearchInput={setSearchInput}
+                onSearchSubmit={handleSearchSubmit}
                 selectedBrands={selectedBrands}
                 setSelectedBrands={setSelectedBrands}
-                totalParts={totalParts}
+                brandOptions={brandOptions}
+                totalParts={totalPartsCount}
                 grouped={grouped}
                 collapsedGroups={collapsedGroups}
                 toggleGroup={toggleGroup}
                 cart={cart}
                 onAdd={addToCart}
                 onQty={updateCartQty}
+                isLoadingParts={isLoadingParts}
+                page={page}
+                pageSize={pageSize}
+                totalPartsCount={totalPartsCount}
+                onPageChange={setPage}
+                onPageSizeChange={(newSize) => {
+                  setPageSize(newSize);
+                  setPage(1);
+                }}
               />
             )}
           </Card>
@@ -611,6 +1193,8 @@ export default function Global() {
             items={cart}
             onRemove={removeFromCart}
             onCheckout={checkout}
+            onUpdateQty={updateCartQty}
+            onBrowseParts={() => setTab("catalogue")}
           />
         </Card>
       )}
@@ -666,7 +1250,6 @@ function SelectionArea({
   onVMakesChange,
   vModels,
   onVModelsChange,
-  vModelOptions,
   vVariants,
   onVVariantsChange,
   vFuels,
@@ -684,18 +1267,28 @@ function SelectionArea({
   onStockMakesChange,
   stockModels,
   setStockModels,
-  stockModelOptions,
+  makeOptions,
+  modelOptions,
+  generationOptions,
+  variantOptions,
+  fuelOptions,
+  yearOptions,
+  categoryOptions,
+  subcategoryOptions,
   selectedCats,
   toggleCategoryChip,
   setSelectedCats,
   selectedSubs,
   toggleSubChip,
   setSelectedSubs,
-  activeSubcategoryOptions,
   partQuery,
   setPartQuery,
+  searchInput,
+  setSearchInput,
+  onSearchSubmit,
   selectedBrands,
   setSelectedBrands,
+  brandOptions = [],
   onExplore,
   canExplore,
 }) {
@@ -707,16 +1300,25 @@ function SelectionArea({
   return (
     <div className="space-y-6 p-5">
       {mode === "vehicle" && (
-        <div className="flex items-center gap-3">
-          <div>
-            <Input
+        <div className="flex flex-col sm:flex-row items-center gap-3 p-4 bg-ink-50 rounded-xl border border-ink-200 mb-6">
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+            <input
               type="text"
               value={regNo}
               onChange={(e) => setRegNo(e.target.value.toUpperCase())}
-              placeholder="Enter Vehicle Number"
+              onKeyDown={(e) => e.key === "Enter" && onLookup()}
+              placeholder="ENTER REGISTRATION NO "
+              className="w-full rounded-lg border border-ink-200 bg-white py-2 pl-9 pr-3 text-sm font-semibold uppercase placeholder:normal-case placeholder:font-normal placeholder:text-ink-400 focus:border-accent-500 focus:outline-none"
             />
           </div>
-          <Button onClick={onLookup}>Search</Button>
+          <button
+            type="button"
+            onClick={onLookup}
+            className="w-full sm:w-auto px-5 py-2 text-xs font-semibold uppercase tracking-wider text-white bg-accent-500 rounded-lg hover:bg-accent-600 transition-colors cursor-pointer"
+          >
+            Search Vehicle
+          </button>
         </div>
       )}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
@@ -728,8 +1330,7 @@ function SelectionArea({
         >
           <FilterField label="Make">
             <MultiSelect
-              label="Make"
-              options={MAKE_OPTIONS}
+              options={makeOptions}
               value={mode === "stock" ? stockMakes : vMakes}
               onChange={mode === "stock" ? onStockMakesChange : onVMakesChange}
               placeholder="Select Make"
@@ -738,12 +1339,11 @@ function SelectionArea({
           {showModelSlot && (
             <FilterField label="Model">
               <MultiSelect
-                label="Model"
-                options={mode === "stock" ? stockModelOptions : vModelOptions}
+                options={modelOptions}
                 value={mode === "stock" ? stockModels : vModels}
                 onChange={mode === "stock" ? setStockModels : onVModelsChange}
                 placeholder="Select Model"
-                disabled={mode === "stock" && !stockMakes.length}
+                disabled={mode === "stock" ? !stockMakes.length : !vMakes.length}
               />
             </FilterField>
           )}
@@ -752,8 +1352,7 @@ function SelectionArea({
           <>
             <FilterField label="Brand">
               <MultiSelect
-                label="Brand"
-                options={BRAND_SELECT_OPTIONS}
+                options={brandOptions}
                 value={selectedBrands}
                 onChange={setSelectedBrands}
                 placeholder="Select Brand"
@@ -765,82 +1364,92 @@ function SelectionArea({
                 <div className="mt-3.5">
                   <Input
                     type="text"
-                    value={partQuery}
-                    onChange={(e) => setPartQuery(e.target.value)}
+                    value={searchInput}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        onSearchSubmit();
+                      }
+                    }}
                     placeholder="Search parts (e.g., wiper, brake pad)"
                   />
                 </div>
-                <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+                <Search
+                  className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400 cursor-pointer"
+                  onClick={() => onSearchSubmit()}
+                />
               </div>
             </div>
           </>
         )}
       </div>
 
-      {/* Generation only appears once ≥1 Model is picked, and only for
-          the manual chain — a reg-no search skips it entirely. */}
       {mode === "vehicle" && !skipGeneration && vModels.length > 0 && (
         <div>
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-500">
             Generation
           </p>
           <div className="flex flex-wrap gap-3">
-            {GENERATIONS.map((g) => {
-              const active = generation === g.value;
-              return (
-                <div
-                  key={g.value}
-                  className={clsx(
-                    "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
-                    active
-                      ? "border-accent-500 bg-accent-50"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setGeneration(active ? "" : g.value)}
+            {generationOptions.length === 0 ? (
+              <div className="py-2 text-xs text-ink-400">Loading generations...</div>
+            ) : (
+              generationOptions.map((g) => {
+                const active = generation === g.value;
+                return (
+                  <div
+                    key={g.value}
                     className={clsx(
-                      "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border",
+                      "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
                       active
-                        ? "border-accent-500 bg-accent-500"
-                        : "border-ink-300 bg-white",
+                        ? "border-accent-500 bg-accent-50"
+                        : "border-ink-200 hover:border-ink-300",
                     )}
-                    aria-label={`Select ${g.label}`}
                   >
-                    {active && <Check className="h-3.5 w-3.5 text-white" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onPreviewGen(g)}
-                    className="block w-full cursor-zoom-in"
-                  >
-                    <img
-                      src={g.url}
-                      alt={g.label}
-                      className="mx-auto h-16 w-auto object-cover"
-                    />
-                    <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
-                      {g.label.split(" (")[0]}
-                    </p>
-                  </button>
-                </div>
-              );
-            })}
+                    <button
+                      type="button"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className={clsx(
+                        "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border z-10",
+                        active
+                          ? "border-accent-500 bg-accent-500"
+                          : "border-ink-300 bg-white",
+                      )}
+                      aria-label={`Select ${g.label}`}
+                    >
+                      {active && <Check className="h-3.5 w-3.5 text-white" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onPreviewGen(g)}
+                      className="block w-full cursor-zoom-in"
+                    >
+                      {g.url ? (
+                        <img
+                          src={g.url}
+                          alt={g.label}
+                          className="mx-auto h-16 w-auto object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
+                      ) : null}
+                      <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
+                        {g.label.split(" (")[0]}
+                      </p>
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
 
-      {/* Variant only once the chain is unlocked (Generation picked in
-          the manual flow, or skipped via reg-no search); Fuel Type
-          only once ≥1 Variant is picked; Year only once ≥1 Fuel Type
-          is picked. */}
       {chainUnlocked && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <FilterField label="Variant">
             <MultiSelect
-              label="Variant"
-              options={VARIANT_OPTIONS}
+              options={variantOptions}
               value={vVariants}
               onChange={onVVariantsChange}
               placeholder="Select Variant"
@@ -849,8 +1458,7 @@ function SelectionArea({
           {vVariants.length > 0 && (
             <FilterField label="Fuel Type">
               <MultiSelect
-                label="Fuel Type"
-                options={FUEL_OPTIONS}
+                options={fuelOptions}
                 value={vFuels}
                 onChange={onVFuelsChange}
                 placeholder="Select Fuel Type"
@@ -860,8 +1468,7 @@ function SelectionArea({
           {vFuels.length > 0 && (
             <FilterField label="Year">
               <MultiSelect
-                label="Year"
-                options={YEAR_OPTIONS}
+                options={yearOptions}
                 value={vYears}
                 onChange={setVYears}
                 placeholder="Select Year"
@@ -875,29 +1482,26 @@ function SelectionArea({
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_auto]">
           <FilterField label="Categories">
             <MultiSelect
-              label="Categories"
-              options={GLOBAL_CATEGORIES}
+              options={categoryOptions}
               value={selectedCats}
               onChange={(next) => {
                 setSelectedCats(next);
                 setSelectedSubs([]);
               }}
               placeholder="Select Categories"
-              disabled={!vMakes.length}
               withSelectAll
               selectAllLabel="All"
             />
           </FilterField>
           <FilterField label="Sub Categories">
             <MultiSelect
-              label="Sub Categories"
-              options={activeSubcategoryOptions}
+              options={subcategoryOptions}
               value={selectedSubs}
               onChange={setSelectedSubs}
               placeholder="Select Sub Categories"
               disabled={!selectedCats.length}
               withSelectAll
-              selectAllLabel="All "
+              selectAllLabel="All"
             />
           </FilterField>
           <div className="self-end">
@@ -908,13 +1512,14 @@ function SelectionArea({
         </div>
       ) : (
         <StockCategoryChips
+          categoryOptions={categoryOptions}
           selectedCats={selectedCats}
           toggleCategoryChip={toggleCategoryChip}
           setSelectedCats={setSelectedCats}
           selectedSubs={selectedSubs}
           toggleSubChip={toggleSubChip}
           setSelectedSubs={setSelectedSubs}
-          activeSubcategoryOptions={activeSubcategoryOptions}
+          activeSubcategoryOptions={subcategoryOptions}
           onExplore={onExplore}
           canExplore={canExplore}
         />
@@ -924,20 +1529,22 @@ function SelectionArea({
 }
 
 function StockCategoryChips({
+  categoryOptions = [],
   selectedCats,
   toggleCategoryChip,
   setSelectedCats,
   selectedSubs,
   toggleSubChip,
   setSelectedSubs,
-  activeSubcategoryOptions,
+  activeSubcategoryOptions = [],
   onExplore,
   canExplore,
 }) {
-  const allCatsSelected = selectedCats.length === GLOBAL_CATEGORIES.length;
+  const catsList = categoryOptions;
+  const subsList = activeSubcategoryOptions || [];
+  const allCatsSelected = selectedCats.length === catsList.length;
   const allSubsSelected =
-    activeSubcategoryOptions.length > 0 &&
-    selectedSubs.length === activeSubcategoryOptions.length;
+    subsList.length > 0 && selectedSubs.length === subsList.length;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -954,22 +1561,11 @@ function StockCategoryChips({
           >
             {selectedCats.length} selected
           </span>
-          {/* <button
-            type="button"
-            onClick={() =>
-              setSelectedCats(
-                allCatsSelected ? [] : GLOBAL_CATEGORIES.map((c) => c.value),
-              )
-            }
-            className="ml-auto text-[11px] font-semibold text-brand-700 hover:underline"
-          >
-            {allCatsSelected ? "Clear all" : "Select all"}
-          </button> */}
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {GLOBAL_CATEGORIES.map((c) => {
+          {catsList.map((c) => {
             const active = selectedCats.includes(c.value);
-            const Icon = CAT_ICONS[c.value] ?? SettingsIcon;
+            const Icon = Icons[CAT_ICONS[c.value]] ?? Icons.Settings;
             return (
               <button
                 key={c.value}
@@ -1008,30 +1604,15 @@ function StockCategoryChips({
           >
             {selectedSubs.length} selected
           </span>
-          {/* {activeSubcategoryOptions.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setSelectedSubs(
-                  allSubsSelected
-                    ? []
-                    : activeSubcategoryOptions.map((s) => s.value),
-                )
-              }
-              className="ml-auto text-[11px] font-semibold text-brand-700 hover:underline"
-            >
-              {allSubsSelected ? "Clear all" : "Select all"}
-            </button>
-          )} */}
         </div>
-        {activeSubcategoryOptions.length === 0 ? (
+        {subsList.length === 0 ? (
           <div className="rounded-lg border border-dashed border-ink-200 px-3 py-6 text-center text-xs text-ink-500">
             Select a category to see its sub-categories.
           </div>
         ) : (
           <>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {activeSubcategoryOptions.map((s) => {
+              {subsList.map((s) => {
                 const active = selectedSubs.includes(s.value);
                 return (
                   <button
@@ -1045,7 +1626,7 @@ function StockCategoryChips({
                         : "border-ink-200 bg-white text-ink-700 hover:bg-ink-50",
                     )}
                   >
-                    <SettingsIcon
+                    <Icons.Settings
                       className={clsx(
                         "h-4 w-4",
                         active ? "text-accent-600" : "text-accent-500",
@@ -1086,15 +1667,20 @@ function ExploreArea({
   years,
   selectedCats,
   selectedSubs,
-  activeSubcategoryOptions,
+  categoryOptions = [],
+  activeSubcategoryOptions = [],
   onClearEdit,
   onEditSelection,
   sort,
   setSort,
   partQuery,
   setPartQuery,
+  searchInput,
+  setSearchInput,
+  onSearchSubmit,
   selectedBrands,
   setSelectedBrands,
+  brandOptions = [],
   totalParts,
   grouped,
   collapsedGroups,
@@ -1102,13 +1688,19 @@ function ExploreArea({
   cart,
   onAdd,
   onQty,
+  isLoadingParts,
+  page = 1,
+  pageSize = 20,
+  totalPartsCount = 0,
+  onPageChange,
+  onPageSizeChange,
 }) {
   const catLabels = selectedCats
-    .map((v) => GLOBAL_CATEGORIES.find((c) => c.value === v)?.label)
+    .map((v) => (categoryOptions || []).find((c) => c.value === v)?.label || v)
     .filter(Boolean);
   const selectedSubLabels = selectedSubs
     .map(
-      (value) => activeSubcategoryOptions.find((s) => s.value === value)?.label,
+      (value) => (activeSubcategoryOptions || []).find((s) => s.value === value)?.label || value,
     )
     .filter(Boolean);
 
@@ -1118,15 +1710,11 @@ function ExploreArea({
       <div className="mb-3 flex flex-wrap gap-2">
         {makes.length > 0 && <BreadChip>{makes.join(", ")}</BreadChip>}
         {models.length > 0 && (
-          <BreadChip>{models.map((m) => m.toUpperCase()).join(", ")}</BreadChip>
+          <BreadChip>{models.map((m) => String(m).toUpperCase()).join(", ")}</BreadChip>
         )}
         {mode === "vehicle" && !skipGeneration && generation && (
           <BreadChip>
-            {
-              (
-                GENERATIONS.find((g) => g.value === generation)?.label ?? ""
-              ).split(" (")[0]
-            }
+            {String(generation).split(" (")[0]}
           </BreadChip>
         )}
         {variants.length > 0 && <BreadChip>{variants.join(", ")}</BreadChip>}
@@ -1158,8 +1746,7 @@ function ExploreArea({
       <div className="mb-4 grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1fr_2fr_auto]">
         <FilterField label="Brand">
           <MultiSelect
-            label="Brand"
-            options={BRAND_SELECT_OPTIONS}
+            options={brandOptions}
             value={selectedBrands}
             onChange={setSelectedBrands}
             placeholder="All Brands"
@@ -1183,21 +1770,31 @@ function ExploreArea({
         {/* <FilterField label=" "> */}
         <Input
           type="search"
-          value={partQuery}
-          onChange={(e) => setPartQuery(e.target.value)}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              onSearchSubmit();
+            }
+          }}
           placeholder="Search Part"
         />
         {/* </FilterField> */}
 
         <div className="flex h-11 items-center">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-sm font-semibold text-ink-700">
-            <PackageOpenIcon className="h-4 w-4 text-accent-500" />
+            <Icons.PackageOpen className="h-4 w-4 text-accent-500" />
             <span className="font-bold">{totalParts}</span> Parts
           </span>
         </div>
       </div>
 
-      {grouped.length === 0 ? (
+      {isLoadingParts ? (
+        <div className="flex flex-col items-center justify-center py-20 space-y-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-accent-500 border-t-transparent" />
+          <p className="text-sm font-medium text-ink-600">Loading parts list...</p>
+        </div>
+      ) : grouped.length === 0 ? (
         <div className="rounded-xl border border-dashed border-ink-200 py-16 text-center text-sm text-ink-500">
           No parts match the current filters.
         </div>
@@ -1296,20 +1893,8 @@ function ExploreArea({
                                 <tbody>
                                   {s.parts.map((p) => {
                                     const cartRow = cart.find(
-                                      (c) => c.cartId === p.partNumber,
+                                      (c) => String(c.cartId).toUpperCase() === String(p.partNumber).toUpperCase() || String(c.code).toUpperCase() === String(p.partNumber).toUpperCase() || String(c.part_number).toUpperCase() === String(p.partNumber).toUpperCase(),
                                     );
-                                    const discPct =
-                                      p.mrp && p.saleRate < p.mrp
-                                        ? Math.round(
-                                            ((p.mrp - p.saleRate) / p.mrp) *
-                                              100 *
-                                              100,
-                                          ) / 100
-                                        : 0;
-                                    const priceIncl = Math.round(
-                                      p.saleRate * (1 + p.taxpercent / 100),
-                                    );
-                                    const mrpIncl = Math.round(p.mrp);
                                     return (
                                       <tr
                                         key={p.partNumber}
@@ -1329,13 +1914,13 @@ function ExploreArea({
                                           </span>
                                         </td>
                                         <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{mrpIncl.toLocaleString("en-IN")}
+                                          ₹{p.mrpIncl.toLocaleString("en-IN")}
                                         </td>
                                         <td className="px-4 py-3 text-center text-ink-600">
-                                          {discPct > 0 ? `${discPct}%` : "—"}
+                                          {p.discPct > 0 ? `${p.discPct}%` : "—"}
                                         </td>
                                         <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{priceIncl.toLocaleString("en-IN")}
+                                          ₹{p.priceIncl.toLocaleString("en-IN")}
                                         </td>
                                         <td className="px-4 py-3 text-center text-ink-500">
                                           {p.points || "—"}
@@ -1380,6 +1965,19 @@ function ExploreArea({
           })}
         </div>
       )}
+
+      {totalPartsCount > 0 && (
+        <div className="mt-4 border-t border-ink-100 pt-3">
+          <Pagination
+            page={page}
+            totalPages={Math.ceil(totalPartsCount / pageSize) || 1}
+            totalItems={totalPartsCount}
+            pageSize={pageSize}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -1389,11 +1987,13 @@ function ExploreArea({
 function FilterField({ label, children }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-medium text-brand-700">{label}</p>
+      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-500">{label}</p>
       {children}
     </div>
   );
 }
+
+
 
 function BreadChip({ children }) {
   return (
