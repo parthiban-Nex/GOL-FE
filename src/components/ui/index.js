@@ -7,3 +7,5 @@ export { default as Modal, ConfirmModal } from "@/components/ui/Modal";
 export { default as Dropdown } from "@/components/ui/Dropdown";
 export { default as Table } from "@/components/ui/Table";
 export { default as Pagination } from "@/components/ui/Pagination";
+export { default as SearchableSelect } from "@/components/ui/SearchableSelect";
+export { default as Textarea } from "@/components/ui/Textarea";

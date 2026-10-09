@@ -3,25 +3,36 @@ import { axiosClient } from "@/services";
 
 export const expenseApi = {
   // ─── Expenses (main list) ──────────────────────────────────────────
-  listExpenses(params) {
-    // TODO: return axiosClient.get("/expenses", { params });
-    return Promise.reject(new Error("expenseApi.listExpenses() not connected"));
+  listExpenses(body = {}) {
+    return axiosClient.post("/expense/listExpenses", body);
   },
   getExpense(id) {
-    // TODO: return axiosClient.get(`/expenses/${id}`);
-    return Promise.reject(new Error("expenseApi.getExpense() not connected"));
+    return axiosClient.post("/expense/getExpense", { id });
   },
   createExpense(payload) {
-    // TODO: return axiosClient.post("/expenses", payload);
-    return Promise.reject(
-      new Error("expenseApi.createExpense() not connected"),
-    );
+    if (payload instanceof FormData) {
+      return axiosClient.post("/expense/createExpense", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/expense/createExpense", payload);
   },
-  updateExpense(id, payload) {
-    // TODO: return axiosClient.put(`/expenses/${id}`, payload);
-    return Promise.reject(
-      new Error("expenseApi.updateExpense() not connected"),
-    );
+  updateExpense(idOrPayload, maybePayload) {
+    let payload = idOrPayload;
+    if (maybePayload !== undefined) {
+      if (maybePayload instanceof FormData) {
+        maybePayload.append("id", idOrPayload);
+        payload = maybePayload;
+      } else {
+        payload = { ...maybePayload, id: idOrPayload };
+      }
+    }
+    if (payload instanceof FormData) {
+      return axiosClient.post("/expense/editExpense", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/expense/editExpense", payload);
   },
   removeExpense(id) {
     // TODO: return axiosClient.delete(`/expenses/${id}`);
@@ -30,29 +41,35 @@ export const expenseApi = {
     );
   },
   uploadExpenseDocument(id, file) {
-    // TODO: return axiosClient.postForm(`/expenses/${id}/documents`, { file });
-    return Promise.reject(
-      new Error("expenseApi.uploadExpenseDocument() not connected"),
-    );
+    const formData = new FormData();
+    formData.append("id", id);
+    formData.append("document", file);
+    return axiosClient.post("/expense/uploadExpenseDocument", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
   },
-  exportCsv(params) {
-    // TODO: return axiosClient.get("/expenses/export", { params, responseType: "blob" });
-    return Promise.reject(new Error("expenseApi.exportCsv() not connected"));
+  exportCsv(params = {}) {
+    return axiosClient.post("/expense/listExpenses", params);
   },
 
   // ─── Vendors ───────────────────────────────────────────────────────
-  listVendors(params) {
-    // TODO: return axiosClient.get("/vendors", { params });
-    return Promise.reject(new Error("expenseApi.listVendors() not connected"));
+  listVendors(body = {}) {
+    return axiosClient.post("/expenseVendor/listExpenseVendors", body);
   },
   createVendor(payload) {
-    // TODO: return axiosClient.post("/vendors", payload);
-    return Promise.reject(new Error("expenseApi.createVendor() not connected"));
+    if (payload instanceof FormData) {
+      return axiosClient.post("/expenseVendor/createExpenseVendor", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/expenseVendor/createExpenseVendor", payload);
   },
   uploadVendorDocument(id, file) {
-    // TODO: return axiosClient.postForm(`/vendors/${id}/documents`, { file });
-    return Promise.reject(
-      new Error("expenseApi.uploadVendorDocument() not connected"),
-    );
+    const formData = new FormData();
+    formData.append("document", file);
+    formData.append("id", id);
+    return axiosClient.post("/expenseVendor/createExpenseVendor", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
   },
 };

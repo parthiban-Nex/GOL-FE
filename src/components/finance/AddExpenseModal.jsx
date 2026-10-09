@@ -1,22 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ShoppingCart, UploadCloud } from "lucide-react";
-import Modal from "@/components/ui/Modal";
-import Button from "@/components/ui/Button";
-import Input from "@/components/ui/Input";
-import Select from "@/components/ui/Select";
-import Textarea from "@/components/ui/Textarea";
+import {
+  Modal,
+  Button,
+  Input,
+  Select,
+  SearchableSelect,
+  Textarea,
+} from "@/components/ui";
 import {
   EXPENSE_HEAD_OPTIONS,
   EXPENSE_TYPE_OPTIONS,
   PAYMENT_MODE_OPTIONS,
   EXPENSE_STATUS_OPTIONS,
 } from "@/pages/finance/mockexpense";
+import { expenseApi } from "@/services";
 import { showToast } from "@/utils/toast";
 
 const EMPTY_FORM = {
   head: "",
   type: "",
   vendor: "",
+  vendorId: null,
   invoiceNo: "",
   date: "",
   paymentMode: "",
@@ -28,8 +33,11 @@ const EMPTY_FORM = {
   notes: "",
 };
 
-export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
+export default function AddExpenseModal({ isOpen, onClose, onSubmit, vendors = [] }) {
   const [form, setForm] = useState(EMPTY_FORM);
+  const [vendorList, setVendorList] = useState(vendors);
+  const [searchingVendors, setSearchingVendors] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
 
   // Reset form each time the modal opens so it doesn't remember state
@@ -37,9 +45,47 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
   useEffect(() => {
     if (isOpen) {
       setForm(EMPTY_FORM);
+      setVendorList(vendors);
       setErrors({});
+      setSearchingVendors(false);
+      setLoading(false);
     }
-  }, [isOpen]);
+  }, [isOpen, vendors]);
+
+  // Debounced search handler called by SearchableSelect
+  const handleVendorSearch = async (searchTerm) => {
+    if (!searchTerm || !searchTerm.trim()) {
+      setVendorList(vendors);
+      return;
+    }
+
+    try {
+      setSearchingVendors(true);
+      const res = await expenseApi.listVendors({ query: searchTerm.trim() });
+      if (res?.vendorData && Array.isArray(res.vendorData)) {
+        setVendorList(res.vendorData);
+      }
+    } catch (err) {
+      console.warn("Error fetching debounced vendors:", err);
+    } finally {
+      setSearchingVendors(false);
+    }
+  };
+
+  const vendorOptions = useMemo(() => {
+    return (vendorList || []).map((v) => {
+      const name = v.vendorName || v.name || "";
+      const code = v.vendorCode || "";
+      const type = v.vendorType || v.type || "";
+      return {
+        id: v.id || null,
+        value: name,
+        label: name,
+        code: code,
+        subLabel: type,
+      };
+    });
+  }, [vendorList]);
 
   function update(field, value) {
     setForm((f) => {
@@ -52,7 +98,7 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
     });
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const nextErrors = {};
     if (!form.head) nextErrors.head = "Expense head is required";
     if (!form.type) nextErrors.type = "Type is required";
@@ -62,19 +108,33 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
 
-    const paid = Number(form.paid) || 0;
-    const incl = Number(form.inclGst) || 0;
-    onSubmit({
-      ...form,
-      exclGst: Number(form.exclGst) || 0,
-      gst: Number(form.gst) || 0,
-      inclGst: incl,
-      paid,
-      pending: Math.max(0, incl - paid),
-      status: form.status || (paid >= incl && incl > 0 ? "Paid" : "Pending"),
-      documents: [],
-    });
-    showToast.success("Expense added.");
+    try {
+      setLoading(true);
+      const paid = Number(form.paid) || 0;
+      const incl = Number(form.inclGst) || 0;
+      const payload = {
+        ...form,
+        vendorId: form.vendorId || null,
+        exclGst: Number(form.exclGst) || 0,
+        gst: Number(form.gst) || 0,
+        inclGst: incl,
+        paid,
+        pending: Math.max(0, incl - paid),
+        status: form.status || (paid >= incl && incl > 0 ? "Paid" : "Pending"),
+      };
+
+      const res = await expenseApi.createExpense(payload);
+      showToast.success(res?.message || "Expense added successfully.");
+
+      if (onSubmit) {
+        onSubmit(res?.data || payload);
+      }
+      onClose();
+    } catch (err) {
+      showToast.error(err?.message || "Failed to add expense");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -92,10 +152,12 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
       }
       footer={
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit}>Add Expense</Button>
+          <Button onClick={handleSubmit} loading={loading} disabled={loading}>
+            Add Expense
+          </Button>
         </div>
       }
     >
@@ -122,12 +184,21 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Input
-            label="Vendor / Payee "
+          <SearchableSelect
+            label="Vendor / Payee"
             required
             value={form.vendor}
-            onChange={(e) => update("vendor", e.target.value)}
-            placeholder="Vendor name"
+            onChange={(val, selectedOpt) => {
+              setForm((f) => ({
+                ...f,
+                vendor: val,
+                vendorId: selectedOpt?.id || null,
+              }));
+            }}
+            onSearch={handleVendorSearch}
+            loading={searchingVendors}
+            options={vendorOptions}
+            placeholder="Search by vendor name or code..."
             error={errors.vendor}
           />
           <Input
@@ -208,6 +279,8 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
           />
         </div>
 
+        {/* Attach Documents hidden for now - will be enabled once cloud permissions are set */}
+        {/*
         <div>
           <p className="mb-1.5 text-sm font-medium text-ink-700">
             Attach Documents
@@ -220,7 +293,10 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit }) {
             <input type="file" className="hidden" multiple />
           </label>
         </div>
+        */}
       </div>
     </Modal>
   );
 }
+
+
