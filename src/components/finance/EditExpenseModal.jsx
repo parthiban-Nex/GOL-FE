@@ -46,6 +46,7 @@ export default function EditExpenseModal({
   const [searchingVendors, setSearchingVendors] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
+  const [originalPaid, setOriginalPaid] = useState(0);
 
   useEffect(() => {
     if (isOpen && expense) {
@@ -54,6 +55,18 @@ export default function EditExpenseModal({
           ? expense.date.split("T")[0]
           : expense.date
         : "";
+
+      const prevPaid = Number(expense.paid ?? 0);
+      const inclGstVal = Number(expense.inclGst ?? expense.incl_gst ?? 0);
+      const remaining = Math.max(0, inclGstVal - prevPaid);
+      setOriginalPaid(prevPaid);
+
+      const initialPayNow = remaining;
+      const initialTotalPaid = prevPaid + initialPayNow;
+      const initialStatus =
+        inclGstVal > 0 && initialTotalPaid >= inclGstVal
+          ? "Paid"
+          : expense.status || "Pending";
 
       setForm({
         id: expense.id || null,
@@ -66,9 +79,9 @@ export default function EditExpenseModal({
         paymentMode: expense.paymentMode || expense.payment_mode || "",
         exclGst: expense.exclGst ?? expense.excl_gst ?? 0,
         gst: expense.gst ?? 0,
-        inclGst: expense.inclGst ?? expense.incl_gst ?? 0,
-        paid: expense.paid ?? 0,
-        status: expense.status || "",
+        inclGst: inclGstVal,
+        paid: remaining,
+        status: initialStatus,
         notes: expense.notes || "",
       });
       setVendorList(vendors);
@@ -77,6 +90,7 @@ export default function EditExpenseModal({
       setLoading(false);
     } else if (isOpen) {
       setForm(EMPTY_FORM);
+      setOriginalPaid(0);
       setVendorList(vendors);
       setErrors({});
       setSearchingVendors(false);
@@ -126,6 +140,19 @@ export default function EditExpenseModal({
       if (field === "exclGst" || field === "gst") {
         next.inclGst = (Number(next.exclGst) || 0) + (Number(next.gst) || 0);
       }
+      // Auto-update status when payment or amount fields change
+      if (
+        field === "paid" ||
+        field === "exclGst" ||
+        field === "gst" ||
+        field === "inclGst"
+      ) {
+        const payNow =
+          field === "paid" ? Number(value) || 0 : Number(next.paid) || 0;
+        const totalPaid = originalPaid + payNow;
+        const incl = Number(next.inclGst) || 0;
+        next.status = incl > 0 && totalPaid >= incl ? "Paid" : "Pending";
+      }
       return next;
     });
   }
@@ -142,8 +169,15 @@ export default function EditExpenseModal({
 
     try {
       setLoading(true);
-      const paid = Number(form.paid) || 0;
+      const payNow = Number(form.paid) || 0;
+      const paid = originalPaid + payNow;
       const incl = Number(form.inclGst) || 0;
+      const pending = Math.max(0, incl - paid);
+      const status =
+        incl > 0 && paid >= incl
+          ? "Paid"
+          : form.status || "Pending";
+
       const payload = {
         ...form,
         vendorId: form.vendorId || null,
@@ -151,8 +185,8 @@ export default function EditExpenseModal({
         gst: Number(form.gst) || 0,
         inclGst: incl,
         paid,
-        pending: Math.max(0, incl - paid),
-        status: form.status || (paid >= incl && incl > 0 ? "Paid" : "Pending"),
+        pending,
+        status,
       };
 
       const res = await expenseApi.updateExpense(payload);
@@ -286,13 +320,34 @@ export default function EditExpenseModal({
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Input
-            type="number"
-            min={0}
-            label="Amount Paid (₹)"
-            value={form.paid}
-            onChange={(e) => update("paid", e.target.value)}
-          />
+          {originalPaid > 0 && (
+            <div className="sm:col-span-2 rounded-lg border border-blue-100 bg-blue-50/50 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium text-ink-600">Previously Paid</span>
+                <span className="font-semibold text-ink-800">
+                  ₹{originalPaid.toLocaleString("en-IN")}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <Input
+              type="number"
+              min={0}
+              label={originalPaid > 0 ? "Pay Now (₹)" : "Amount Paid (₹)"}
+              value={form.paid}
+              onChange={(e) => update("paid", e.target.value)}
+            />
+            {originalPaid > 0 && (
+              <p className="mt-1 text-xs text-ink-500">
+                Total paid: ₹{(originalPaid + (Number(form.paid) || 0)).toLocaleString("en-IN")}
+                {" · "}
+                Remaining: ₹{Math.max(0, (Number(form.inclGst) || 0) - originalPaid - (Number(form.paid) || 0)).toLocaleString("en-IN")}
+              </p>
+            )}
+          </div>
+
           <Select
             label="Status"
             value={form.status}

@@ -51,7 +51,7 @@ const EXPENSE_EXPORT_COLUMNS = [
   { key: "gst", header: "GST (₹)", value: (r) => Number(r.gst || 0).toFixed(2) },
   { key: "inclGst", header: "Incl. GST (₹)", value: (r) => Number(r.inclGst || 0).toFixed(2) },
   { key: "paid", header: "Paid (₹)", value: (r) => Number(r.paid || 0).toFixed(2) },
-  { key: "pending", header: "Pending (₹)", value: (r) => Number(r.pending || 0).toFixed(2) },
+  { key: "pending", header: "Remaining (₹)", value: (r) => Number(r.pending || 0).toFixed(2) },
   { key: "status", header: "Status" },
   { key: "notes", header: "Notes", value: (r) => r.notes || "" },
   { key: "documentLink", header: "Document Link", value: (r) => r.documentLink || "" },
@@ -206,7 +206,7 @@ export default function Expense() {
       <div className="flex flex-wrap gap-3">
         <StatPill label="Total Incl GST" amount={totals.inclGst} tone="blue" />
         <StatPill label="Total Paid" amount={totals.paid} tone="emerald" />
-        <StatPill label="Total Pending" amount={totals.pending} tone="red" />
+        <StatPill label="Total Remaining" amount={totals.pending} tone="red" />
       </div>
 
       <Card padded={false}>
@@ -300,7 +300,7 @@ export default function Expense() {
                 <th className="px-4 py-3 text-center">Excl GST</th>
                 <th className="px-4 py-3 text-center">Incl GST</th>
                 <th className="px-4 py-3 text-center">Paid</th>
-                <th className="px-4 py-3 text-center">Pending</th>
+                <th className="px-4 py-3 text-center">Remaining</th>
                 <th className="px-4 py-3 text-center">Status</th>
                 <th className="px-4 py-3 text-center">Actions</th>
               </tr>
@@ -589,7 +589,7 @@ function ExpenseRow({ expense, isExpanded, onToggle, onEdit, onUpload }) {
                     valueClass="text-emerald-600 font-semibold"
                   />
                   <DetailRow
-                    label="Pending"
+                    label="Remaining"
                     value={`₹${expense.pending.toLocaleString("en-IN")}`}
                     valueClass={
                       expense.pending > 0 ? "text-red-600 font-semibold" : ""
