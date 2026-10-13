@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Search,
@@ -7,6 +7,7 @@ import {
   ChevronRight,
   X,
   Check,
+  Car,
 } from "lucide-react";
 import * as Icons from "lucide-react";
 import MultiSelect from "@/components/ui/Multiselect";
@@ -21,9 +22,37 @@ import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
 import { showToast } from "@/utils/toast";
 import { catalogueApi } from "@/services/api/catalogueApi";
+import { storage } from "@/utils/storage";
+import { appConfig } from "@/config/appConfig";
 import Pagination from "@/components/ui/Pagination";
 
 const CUSTOMER_CODE = "0046";
+
+/* ─── tiny shared helpers ─── */
+
+const up = (v) => String(v ?? "").toUpperCase();
+const sameCI = (a, b) => up(a) === up(b);
+const underscoreToSpace = (v) => String(v ?? "").replace(/_/g, " ");
+const normKey = (v) => up(underscoreToSpace(v));
+const matchesCartId = (c, id) => sameCI(c.cartId, id) || sameCI(c.code, id);
+const toggleInArray = (arr, value) =>
+  arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+
+const SORT_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "price-asc", label: "Price: Low to High" },
+  { value: "price-desc", label: "Price: High to Low" },
+  { value: "disc-desc", label: "Discount: High to Low" },
+];
+
+const price = (p) => p.saleRate || p.mrp || 0;
+const SORTERS = {
+  "price-asc": (a, b) => price(a) - price(b),
+  "price-desc": (a, b) => price(b) - price(a),
+  "disc-desc": (a, b) => (b.discPct || 0) - (a.discPct || 0),
+};
+
+/* ─── response normalisers ─── */
 
 function extractData(res) {
   if (!res) return [];
@@ -37,7 +66,7 @@ function extractData(res) {
   if (Array.isArray(res.items)) return res.items;
   if (Array.isArray(res.list)) return res.list;
   if (Array.isArray(res.masterList)) return res.masterList;
-  if (res && typeof res === "object") {
+  if (typeof res === "object") {
     if (res.cart && typeof res.cart === "object") {
       for (const key of Object.keys(res.cart)) {
         if (Array.isArray(res.cart[key])) return res.cart[key];
@@ -50,11 +79,12 @@ function extractData(res) {
   return [];
 }
 
+const trimStr = (v) => (v ? String(v).trim() : "");
+
 function extractVehicleData(res) {
   if (!res) return null;
   const root = res.data ?? res.result ?? res;
-  let target = root;
-  if (Array.isArray(root)) target = root[0] || {};
+  const target = Array.isArray(root) ? root[0] || {} : root;
 
   const mytvs = target.mytvsDetails || target.mytvs || {};
   const user = target.userDetails || target.user || {};
@@ -96,7 +126,7 @@ function extractVehicleData(res) {
     vahan.fuel_type ||
     "";
 
-  const rawYear =
+  const year =
     user.userYear ||
     mytvs.mytvsYear ||
     target.year ||
@@ -106,20 +136,17 @@ function extractVehicleData(res) {
     (vahan.registrationDate ? new Date(vahan.registrationDate).getFullYear() : "") ||
     (vahan.registration_date ? new Date(vahan.registration_date).getFullYear() : "");
 
-  const year = rawYear ? String(rawYear) : "";
-
   return {
-    make: make ? String(make).trim() : "",
-    model: model ? String(model).trim() : "",
-    variant: variant ? String(variant).trim() : "",
-    fuelType: fuelType ? String(fuelType).trim() : "",
-    year: year ? String(year).trim() : "",
+    make: trimStr(make),
+    model: trimStr(model),
+    variant: trimStr(variant),
+    fuelType: trimStr(fuelType),
+    year: trimStr(year),
   };
 }
 
 function toOptions(data, valKey = "masterName", labelKey = "masterName") {
-  const items = extractData(data);
-  return items
+  return extractData(data)
     .map((item) => {
       if (typeof item === "string" || typeof item === "number") {
         return { value: String(item), label: String(item) };
@@ -133,6 +160,9 @@ function toOptions(data, valKey = "masterName", labelKey = "masterName") {
         item.masterCode ??
         item.value ??
         item.id ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
         item[valKey] ??
         item.name ??
         item.label ??
@@ -142,12 +172,56 @@ function toOptions(data, valKey = "masterName", labelKey = "masterName") {
         item.masterName ??
         item.masterValue ??
         item.name ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
         item[labelKey] ??
         item.value ??
         String(val);
       return { value: String(val), label: String(lbl), raw: item };
     })
     .filter((o) => o.value !== "");
+}
+
+/** Append `extra` options that are not already present (case-insensitive). */
+function mergeOptions(base, extra) {
+  const seen = new Set(base.map((o) => up(o.value)));
+  const out = [...base];
+  for (const o of extra) {
+    const k = up(o.value);
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(o);
+    }
+  }
+  return out;
+}
+
+/** Make sure every currently-selected value exists as an option. */
+function withSelected(opts, selected) {
+  return mergeOptions(
+    opts,
+    selected.filter(Boolean).map((s) => ({ value: String(s), label: String(s) })),
+  );
+}
+
+const isMissingSelected = (opts, selected) =>
+  selected.some((s) => !opts.some((o) => sameCI(o.value, s)));
+
+/**
+ * Build the option list for fuels/years: primary response, a looser fallback
+ * request when it is empty / missing a selected value, then the selected values.
+ */
+async function buildOptionsWithFallback({ res, selected, canFallback, fetchFallback, label }) {
+  let opts = toOptions(res);
+  if ((!opts.length || isMissingSelected(opts, selected)) && canFallback) {
+    try {
+      opts = mergeOptions(opts, toOptions(await fetchFallback()));
+    } catch (e) {
+      console.warn(`Fallback ${label} error:`, e);
+    }
+  }
+  return withSelected(opts, selected);
 }
 
 function toGenerations(data) {
@@ -162,8 +236,10 @@ function toGenerations(data) {
     const val =
       item.masterName ??
       item.masterValue ??
+      item.masterCode ??
       item.value ??
       item.id ??
+      item.code ??
       item.vehicleGeneration ??
       item.generation ??
       item.name ??
@@ -176,10 +252,12 @@ function toGenerations(data) {
       item.generation ??
       String(val);
     const url =
-      item.url ??
       item.imageUrl ??
+      item.url ??
       item.image_url ??
       item.image ??
+      item.picture ??
+      item.img ??
       "";
     return { value: String(val), label: String(lbl), url };
   });
@@ -207,9 +285,6 @@ function normalizePartItem(item, idx) {
       ? mrpVal * (1 - discPct / 100)
       : parseFloat(item.listPrice || item.mrp || item.saleRate || 0);
 
-  const priceIncl = Math.round(saleVal * (1 + taxVal / 100));
-  const mrpIncl = Math.round(mrpVal);
-
   return {
     partNumber: pNo,
     itemDescription: desc,
@@ -217,9 +292,9 @@ function normalizePartItem(item, idx) {
     aggregate: agg,
     subAggregate: sub,
     mrp: mrpVal,
-    mrpIncl,
+    mrpIncl: Math.round(mrpVal),
     saleRate: saleVal,
-    priceIncl,
+    priceIncl: Math.round(saleVal * (1 + taxVal / 100)),
     taxpercent: taxVal,
     discPct,
     points: item.partConfig?.loyaltyBasePoints || item.points || 0,
@@ -240,7 +315,7 @@ function normalizeCartItem(item) {
   const billingPrice = Number(item.billingPrice ?? listPrice);
   const tax = Number(item.taxAmount ?? item.tax ?? 0);
   const discountPerUnit = Number(item.discountPerUnit ?? Math.max(0, mrp - listPrice));
-  const totalAmount = Number(item.totalAmount ?? item.total ?? (qty * (billingPrice + tax)));
+  const totalAmount = Number(item.totalAmount ?? item.total ?? qty * (billingPrice + tax));
 
   return {
     cartId: String(partNo),
@@ -318,22 +393,13 @@ export default function Global() {
   const [selectedBrands, setSelectedBrands] = useState([]);
   const [partQuery, setPartQuery] = useState("");
   const [searchInput, setSearchInput] = useState("");
-
-  function handleSearchSubmit(queryToSubmit) {
-    const q = queryToSubmit !== undefined ? queryToSubmit : searchInput;
-    const clean = String(q || "").trim();
-    if (!clean) return;
-    setPartQuery(clean);
-    setSearchInput(clean);
-    setPhase("explore");
-    setPage(1);
-  }
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
   // Dynamic API options states
   const [makeOptions, setMakeOptions] = useState([]);
   const [modelOptions, setModelOptions] = useState([]);
   const [generationOptions, setGenerationOptions] = useState([]);
+  const [isLoadingGenerations, setIsLoadingGenerations] = useState(false);
   const [variantOptions, setVariantOptions] = useState([]);
   const [fuelOptions, setFuelOptions] = useState([]);
   const [yearOptions, setYearOptions] = useState([]);
@@ -351,8 +417,104 @@ export default function Global() {
   const [orders, setOrders] = useState([]);
   const [openOrder, setOpenOrder] = useState(null);
 
+  // Always-fresh view of the cart for stable callbacks.
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
+
   const currentMakes = mode === "stock" ? stockMakes : vMakes;
   const currentModels = mode === "stock" ? stockModels : vModels;
+
+  function handleSearchSubmit(queryToSubmit) {
+    const q = queryToSubmit !== undefined ? queryToSubmit : searchInput;
+    const clean = String(q || "").trim();
+
+    if (!clean) {
+      if (partQuery) {
+        setPartQuery("");
+        setSearchInput("");
+        setPage(1);
+      }
+      return;
+    }
+
+    if (clean.length < 4) {
+      showToast.warning("Search query must be at least 4 characters long.");
+      return;
+    }
+
+    setPartQuery(clean);
+    setSearchInput(clean);
+    setPhase("explore");
+    setPage(1);
+  }
+
+  const fetchCart = useCallback(() => {
+    catalogueApi
+      .getCart()
+      .then((res) => {
+        const raw = extractData(res);
+        if (Array.isArray(raw)) {
+          setCart(raw.map(normalizeCartItem).filter(Boolean));
+        }
+      })
+      .catch((err) => {
+        console.warn("Error fetching cart from backend:", err);
+      });
+  }, []);
+
+
+  const fetchOrders = async () => {
+    console.log("[Direct Enquiry] fetchOrders() called");
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    console.log("[Direct Enquiry] User:", loggedInUser);
+    console.log("[Direct Enquiry] workshopId:", workshopId);
+
+    try {
+      console.log("[Direct Enquiry] Sending GET request...");
+
+      const res =
+        await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+
+      console.log("[Direct Enquiry] Response status:", res.status);
+      console.log("[Direct Enquiry] Response data:", res.data);
+
+      const list = res?.data || res?.orders || extractData(res);
+
+      if (Array.isArray(list)) {
+        console.log("[Direct Enquiry] Orders count:", list.length);
+        setOrders(list);
+      } else {
+        console.warn("[Direct Enquiry] Unexpected response format:", list);
+      }
+    } catch (err) {
+      console.error("[Direct Enquiry] Request failed:", {
+        message: err.message,
+        status: err.response?.status,
+        responseData: err.response?.data,
+        url: err.config?.url,
+        method: err.config?.method,
+      });
+    }
+  };
+
+
+  // Fetch orders whenever user switches to the orders tab
+  useEffect(() => {
+    if (tab === "orders") {
+      fetchOrders();
+    }
+  }, [tab]);
 
   // Reset page to 1 when filters change
   useEffect(() => {
@@ -373,7 +535,7 @@ export default function Global() {
     partQuery,
   ]);
 
-  // 1. Fetch Makes, Brands, Categories & Cart on mount (customerCode 0046)
+  // 1. Fetch Makes, Brands, Cart & Orders on mount (customerCode 0046)
   useEffect(() => {
     catalogueApi
       .getMakes({ customerCode: CUSTOMER_CODE })
@@ -385,18 +547,23 @@ export default function Global() {
       .then((res) => setBrandOptions(toOptions(res)))
       .catch(() => setBrandOptions([]));
 
+    fetchCart();
+    fetchOrders();
+  }, [fetchCart, fetchOrders]);
+
+  // 1b. Fetch Categories when Selected Brands, Makes, or Models change
+  useEffect(() => {
     catalogueApi
-      .getCategories({ customerCode: CUSTOMER_CODE })
+      .getCategories({
+        customerCode: CUSTOMER_CODE,
+        brand: selectedBrands,
+        make: currentMakes,
+        model: currentModels,
+        primary: false,
+      })
       .then((res) => setCategoryOptions(toOptions(res)))
       .catch(() => setCategoryOptions([]));
-
-    fetchCart();
-
-    catalogueApi
-      .getOrders()
-      .then((res) => setOrders(extractData(res)))
-      .catch(() => setOrders([]));
-  }, []);
+  }, [selectedBrands, currentMakes, currentModels]);
 
   // 2. Fetch Models when Makes change
   useEffect(() => {
@@ -414,37 +581,74 @@ export default function Global() {
   useEffect(() => {
     if (mode !== "vehicle" || !vModels.length) {
       setGenerationOptions([]);
+      setIsLoadingGenerations(false);
       return;
     }
-    catalogueApi
-      .getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels })
-      .then((res) => setGenerationOptions(toGenerations(res)))
-      .catch(() => setGenerationOptions([]));
+    setIsLoadingGenerations(true);
+    const fetchGen = async () => {
+      try {
+        let res = await catalogueApi.getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels });
+        let opts = toGenerations(res);
+        if (!opts.length) {
+          res = await catalogueApi.getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels });
+          opts = toGenerations(res);
+        }
+        setGenerationOptions(opts);
+        if (opts.length === 0) {
+          setSkipGeneration(true);
+        }
+      } catch (err) {
+        console.warn("Failed to fetch generations:", err);
+        setGenerationOptions([]);
+        setSkipGeneration(true);
+      } finally {
+        setIsLoadingGenerations(false);
+      }
+    };
+    fetchGen();
   }, [vMakes, vModels, mode]);
 
   // 4. Fetch Variants when Generation changes (or skipped)
+  // NOTE: vVariants is intentionally not a dependency (it is only used to keep
+  // already-selected values visible in the list).
   useEffect(() => {
     if (mode !== "vehicle" || (!generation && !skipGeneration)) {
       setVariantOptions([]);
       return;
     }
-    catalogueApi
-      .getVariants({
-        customerCode: CUSTOMER_CODE,
-        make: vMakes,
-        model: vModels,
-        vehicleGeneration: generation || null,
-      })
-      .then((res) => {
-        let opts = toOptions(res);
-        vVariants.forEach((v) => {
-          if (v && !opts.some((o) => o.value.toUpperCase() === String(v).toUpperCase())) {
-            opts.push({ value: String(v), label: String(v) });
-          }
+    const fetchVariants = async () => {
+      try {
+        let res = await catalogueApi.getVariants({
+          customerCode: CUSTOMER_CODE,
+          make: vMakes,
+          model: vModels,
+          vehicleGeneration: generation || null,
         });
-        setVariantOptions(opts);
-      })
-      .catch(() => setVariantOptions([]));
+        let opts = toOptions(res, "variant", "variant");
+        if (!opts.length && generation) {
+          res = await catalogueApi.getVariants({
+            make: vMakes,
+            model: vModels,
+          });
+          opts = toOptions(res, "variant", "variant");
+        }
+        if (!opts.length) {
+          res = await catalogueApi.getVariants({
+            customerCode: CUSTOMER_CODE,
+            make: vMakes,
+            model: vModels,
+            vehicleGeneration: generation || null,
+          });
+          opts = toOptions(res, "variant", "variant");
+        }
+        setVariantOptions(withSelected(opts, vVariants));
+      } catch (err) {
+        console.warn("Failed to fetch variants:", err);
+        setVariantOptions(withSelected([], vVariants));
+      }
+    };
+    fetchVariants();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vMakes, vModels, generation, skipGeneration, mode]);
 
   // 5. Fetch Fuels when Variants change
@@ -453,6 +657,10 @@ export default function Global() {
       setFuelOptions([]);
       return;
     }
+    const applyFuels = (opts) => {
+      setFuelOptions(opts);
+      if (opts.length === 1) setVFuels([opts[0].value]);
+    };
     catalogueApi
       .getFuels({
         customerCode: CUSTOMER_CODE,
@@ -461,41 +669,24 @@ export default function Global() {
         vehicleGeneration: generation || null,
         variant: vVariants,
       })
-      .then(async (res) => {
-        let opts = toOptions(res);
-        const missingSelectedFuel = vFuels.some(
-          (f) => !opts.some((o) => o.value.toUpperCase() === String(f).toUpperCase())
-        );
-        if ((!opts.length || missingSelectedFuel) && vMakes.length && vModels.length) {
-          try {
-            const fallbackRes = await catalogueApi.getFuels({
-              customerCode: CUSTOMER_CODE,
-              make: vMakes,
-              model: vModels,
-            });
-            const fallbackOpts = toOptions(fallbackRes);
-            const combined = [...opts];
-            fallbackOpts.forEach((fo) => {
-              if (!combined.some((c) => c.value.toUpperCase() === fo.value.toUpperCase())) {
-                combined.push(fo);
-              }
-            });
-            opts = combined;
-          } catch (e) {
-            console.warn("Fallback getFuels error:", e);
-          }
-        }
-        vFuels.forEach((f) => {
-          if (f && !opts.some((o) => o.value.toUpperCase() === String(f).toUpperCase())) {
-            opts.push({ value: String(f), label: String(f) });
-          }
-        });
-        setFuelOptions(opts);
-      })
-      .catch(() => {
-        const opts = vFuels.map((f) => ({ value: String(f), label: String(f) }));
-        setFuelOptions(opts);
-      });
+      .then(async (res) =>
+        applyFuels(
+          await buildOptionsWithFallback({
+            res,
+            selected: vFuels,
+            canFallback: vMakes.length && vModels.length,
+            fetchFallback: () =>
+              catalogueApi.getFuels({
+                customerCode: CUSTOMER_CODE,
+                make: vMakes,
+                model: vModels,
+              }),
+            label: "getFuels",
+          }),
+        ),
+      )
+      .catch(() => applyFuels(withSelected([], vFuels)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vMakes, vModels, generation, vVariants, mode]);
 
   // 6. Fetch Years when Fuels change
@@ -513,44 +704,27 @@ export default function Global() {
         variant: vVariants,
         fuelType: vFuels,
       })
-      .then(async (res) => {
-        let opts = toOptions(res);
-        const missingSelectedYear = vYears.some(
-          (y) => !opts.some((o) => o.value.toUpperCase() === String(y).toUpperCase())
-        );
-        if ((!opts.length || missingSelectedYear) && vMakes.length && vModels.length) {
-          try {
-            const fallbackRes = await catalogueApi.getYears({
-              customerCode: CUSTOMER_CODE,
-              make: vMakes,
-              model: vModels,
-            });
-            const fallbackOpts = toOptions(fallbackRes);
-            const combined = [...opts];
-            fallbackOpts.forEach((fo) => {
-              if (!combined.some((c) => c.value.toUpperCase() === fo.value.toUpperCase())) {
-                combined.push(fo);
-              }
-            });
-            opts = combined;
-          } catch (e) {
-            console.warn("Fallback getYears error:", e);
-          }
-        }
-        vYears.forEach((y) => {
-          if (y && !opts.some((o) => o.value.toUpperCase() === String(y).toUpperCase())) {
-            opts.push({ value: String(y), label: String(y) });
-          }
-        });
-        setYearOptions(opts);
-      })
-      .catch(() => {
-        const opts = vYears.map((y) => ({ value: String(y), label: String(y) }));
-        setYearOptions(opts);
-      });
+      .then(async (res) =>
+        setYearOptions(
+          await buildOptionsWithFallback({
+            res,
+            selected: vYears,
+            canFallback: vMakes.length && vModels.length,
+            fetchFallback: () =>
+              catalogueApi.getYears({
+                customerCode: CUSTOMER_CODE,
+                make: vMakes,
+                model: vModels,
+              }),
+            label: "getYears",
+          }),
+        ),
+      )
+      .catch(() => setYearOptions(withSelected([], vYears)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vMakes, vModels, generation, vVariants, vFuels, mode]);
 
-  // 7. Fetch Subcategories when Categories change
+  // 7. Fetch Subcategories when Categories or Brands change
   useEffect(() => {
     if (!selectedCats.length) {
       setSubcategoryOptions([]);
@@ -562,22 +736,26 @@ export default function Global() {
         make: currentMakes,
         model: currentModels,
         aggregate: selectedCats,
+        brand: selectedBrands,
+        primary: false,
       })
       .then((res) => setSubcategoryOptions(toOptions(res)))
       .catch(() => setSubcategoryOptions([]));
-  }, [currentMakes, currentModels, selectedCats]);
+  }, [currentMakes, currentModels, selectedCats, selectedBrands]);
 
   // 8. Fetch Parts List (getPartsList or generalSearch) with Limit and Offset Pagination
   useEffect(() => {
     const cleanQuery = partQuery.trim();
     if (phase !== "explore" && !cleanQuery) return;
 
+    // Ignore responses from requests that were superseded by newer ones.
+    let cancelled = false;
+
     setIsLoadingParts(true);
     if (cleanQuery && phase !== "explore") {
       setPhase("explore");
     }
 
-    const offset = (page - 1) * pageSize;
     const basePayload = {
       customerCode: CUSTOMER_CODE,
       make: currentMakes,
@@ -591,14 +769,14 @@ export default function Global() {
       brand: selectedBrands,
       partNumber: cleanQuery || null,
       limit: pageSize,
-      offset: offset,
+      offset: (page - 1) * pageSize,
     };
 
     const requestPromise = cleanQuery
       ? catalogueApi.generalSearch({
-          customerCode: CUSTOMER_CODE,
-          searchKey: cleanQuery,
-        })
+        customerCode: CUSTOMER_CODE,
+        searchKey: cleanQuery,
+      })
       : catalogueApi.getPartsList(basePayload);
 
     requestPromise
@@ -609,7 +787,7 @@ export default function Global() {
           (!raw || raw.length === 0 || res?.success === false) &&
           (vVariants.length || vYears.length)
         ) {
-          // Fallback: search by Make + Model + Categories without strict variant string if upstream API returns 0 or error
+          // Fallback: search by Make + Model + Categories without strict variant string
           return catalogueApi.getPartsList({
             ...basePayload,
             variant: null,
@@ -620,16 +798,23 @@ export default function Global() {
         return res;
       })
       .then((res) => {
+        if (cancelled) return;
         const raw = extractData(res);
-        const countVal = res?.count ?? res?.totalCount ?? res?.total ?? raw.length;
-        setTotalPartsCount(countVal);
-        setPartsList(raw.map((item, idx) => normalizePartItem(item, idx)).filter(Boolean));
+        setTotalPartsCount(res?.count ?? res?.totalCount ?? res?.total ?? raw.length);
+        setPartsList(raw.map(normalizePartItem).filter(Boolean));
       })
       .catch(() => {
+        if (cancelled) return;
         setPartsList([]);
         setTotalPartsCount(0);
       })
-      .finally(() => setIsLoadingParts(false));
+      .finally(() => {
+        if (!cancelled) setIsLoadingParts(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     phase,
     mode,
@@ -686,15 +871,11 @@ export default function Global() {
   }
 
   function toggleCategoryChip(value) {
-    setSelectedCats((cur) =>
-      cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value],
-    );
+    setSelectedCats((cur) => toggleInArray(cur, value));
     setSelectedSubs([]);
   }
   function toggleSubChip(value) {
-    setSelectedSubs((cur) =>
-      cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value],
-    );
+    setSelectedSubs((cur) => toggleInArray(cur, value));
   }
 
   const canExplore = Boolean(
@@ -736,18 +917,20 @@ export default function Global() {
       return;
     }
 
+    const fallbackLookup = () =>
+      catalogueApi.lookupVehicle(cleanRegNo).then(extractVehicleData);
+
     catalogueApi
       .getVahanDetails(cleanRegNo)
       .then((res) => {
-        let extracted = extractVehicleData(res);
-        if (extracted && (extracted.make || extracted.model)) {
-          return extracted;
-        }
-        return catalogueApi.lookupVehicle(cleanRegNo).then((res2) => extractVehicleData(res2));
+        const extracted = extractVehicleData(res);
+        return extracted && (extracted.make || extracted.model)
+          ? extracted
+          : fallbackLookup();
       })
       .catch((err) => {
         console.warn("getVahanDetails API failed/unauthorized, falling back to lookupVehicle:", err);
-        return catalogueApi.lookupVehicle(cleanRegNo).then((res2) => extractVehicleData(res2));
+        return fallbackLookup();
       })
       .then((data) => {
         if (data && (data.make || data.model)) {
@@ -770,265 +953,289 @@ export default function Global() {
   }
 
   const filteredParts = useMemo(() => {
+    const brandKeys = selectedBrands.length
+      ? new Set(selectedBrands.map((b) => up(String(b).trim())))
+      : null;
+    const catKeys = !partQuery && selectedCats.length ? new Set(selectedCats.map(normKey)) : null;
+    const subKeys = !partQuery && selectedSubs.length ? new Set(selectedSubs.map(normKey)) : null;
+
     const list = partsList.filter((p) => {
       if (!p) return false;
-      const agg = (p.aggregate || p.category || "").trim();
-      const sub = (p.subAggregate || p.subcategory || "").trim();
-      const brand = (p.brandName || p.brand || "").trim();
-
-      if (selectedBrands.length && !selectedBrands.includes(brand)) return false;
-
-      if (!partQuery) {
-        if (selectedCats.length) {
-          const matchCat = selectedCats.some(
-            (c) => c === agg || String(c).replace(/_/g, " ").toUpperCase() === agg.replace(/_/g, " ").toUpperCase()
-          );
-          if (!matchCat) return false;
-        }
-        if (selectedSubs.length) {
-          const matchSub = selectedSubs.some(
-            (s) => s === sub || String(s).replace(/_/g, " ").toUpperCase() === sub.replace(/_/g, " ").toUpperCase()
-          );
-          if (!matchSub) return false;
-        }
-      }
+      if (brandKeys && !brandKeys.has(up((p.brandName || p.brand || "").trim()))) return false;
+      if (catKeys && !catKeys.has(normKey((p.aggregate || p.category || "").trim()))) return false;
+      if (subKeys && !subKeys.has(normKey((p.subAggregate || p.subcategory || "").trim()))) return false;
       return true;
     });
 
-    if (sort === "price-asc") {
-      return [...list].sort((a, b) => (a.saleRate || a.mrp || 0) - (b.saleRate || b.mrp || 0));
-    }
-    if (sort === "price-desc") {
-      return [...list].sort((a, b) => (b.saleRate || b.mrp || 0) - (a.saleRate || a.mrp || 0));
-    }
-    if (sort === "disc-desc") {
-      return [...list].sort((a, b) => (b.discPct || 0) - (a.discPct || 0));
-    }
-    return list;
+    const sorter = SORTERS[sort];
+    return sorter ? [...list].sort(sorter) : list;
   }, [partsList, selectedCats, selectedSubs, selectedBrands, partQuery, sort]);
 
   // Aggregate → sub-aggregate two-level grouping for the results panel.
   const grouped = useMemo(() => {
+    // Label lookups (first match wins, matching on value or underscore-less value).
+    const buildLabelMap = (options) => {
+      const m = new Map();
+      for (const o of options) {
+        const k = underscoreToSpace(o.value);
+        if (!m.has(k)) m.set(k, o.label);
+      }
+      return m;
+    };
+    const catLabels = buildLabelMap(categoryOptions);
+    const subLabels = buildLabelMap(subcategoryOptions);
+
     const byAgg = new Map();
     for (const p of filteredParts) {
       const aggKey = p.aggregate || "PARTS";
       const subKey = p.subAggregate || "GENERAL";
-      if (!byAgg.has(aggKey))
-        byAgg.set(aggKey, { agg: aggKey, subs: new Map() });
-      const grp = byAgg.get(aggKey);
-      if (!grp.subs.has(subKey)) grp.subs.set(subKey, []);
-      grp.subs.get(subKey).push(p);
+      let grp = byAgg.get(aggKey);
+      if (!grp) {
+        grp = { agg: aggKey, subs: new Map(), count: 0 };
+        byAgg.set(aggKey, grp);
+      }
+      let arr = grp.subs.get(subKey);
+      if (!arr) {
+        arr = [];
+        grp.subs.set(subKey, arr);
+      }
+      arr.push(p);
+      grp.count += 1;
     }
-    return Array.from(byAgg.values()).map((g) => ({
+
+    return Array.from(byAgg.values(), (g) => ({
       agg: g.agg,
-      aggLabel:
-        categoryOptions.find((c) => c.value === g.agg || c.value?.replace(/_/g, " ") === g.agg?.replace(/_/g, " "))?.label ?? g.agg,
-      count: Array.from(g.subs.values()).reduce((s, arr) => s + arr.length, 0),
-      subs: Array.from(g.subs.entries()).map(([subKey, parts]) => ({
+      aggLabel: catLabels.get(underscoreToSpace(g.agg)) ?? g.agg,
+      count: g.count,
+      subs: Array.from(g.subs, ([subKey, parts]) => ({
         sub: subKey,
-        subLabel:
-          subcategoryOptions.find((s) => s.value === subKey || s.value?.replace(/_/g, " ") === subKey?.replace(/_/g, " "))?.label ?? subKey,
+        subLabel: subLabels.get(underscoreToSpace(subKey)) ?? subKey,
         parts,
       })),
     }));
   }, [filteredParts, categoryOptions, subcategoryOptions]);
 
-  const totalParts = filteredParts.length;
+  const availableBrands = useMemo(() => {
+    const set = new Set();
+    for (const item of partsList) {
+      if (!item) continue;
+      const b = (item.brandName || item.brand || "").trim();
+      if (b) set.add(b);
+    }
+    for (const sb of selectedBrands) {
+      if (sb) set.add(String(sb).trim());
+    }
+    return Array.from(set)
+      .sort()
+      .map((b) => ({ value: b, label: b }));
+  }, [partsList, selectedBrands]);
 
-  function toggleGroup(key) {
+  // part number (upper-cased) -> { qty, cartId } for O(1) row lookups.
+  const cartLookup = useMemo(() => {
+    const m = new Map();
+    for (const c of cart) {
+      for (const k of [c.cartId, c.code, c.part_number]) {
+        const key = up(k);
+        if (key && !m.has(key)) m.set(key, { qty: c.qty, cartId: c.cartId });
+      }
+    }
+    return m;
+  }, [cart]);
+
+  const toggleGroup = useCallback((key) => {
     setCollapsedGroups((cur) => {
       const next = new Set(cur);
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
-  }
+  }, []);
 
-  const fetchCart = () => {
-    catalogueApi
-      .getCart()
-      .then((res) => {
-        const raw = extractData(res);
-        if (Array.isArray(raw)) {
-          setCart(raw.map(normalizeCartItem).filter(Boolean));
-        }
-      })
-      .catch((err) => {
-        console.warn("Error fetching cart from backend:", err);
-      });
-  };
-
-  async function addToCart(part) {
-    const partNo = part.partNumber || part.code;
-    const newItem = normalizeCartItem({
-      partNumber: partNo,
-      part_number: partNo,
-      itemDescription: part.itemDescription || part.name,
-      brandName: part.brandName || part.brand,
-      mrp: part.mrp || 0,
-      saleRate: part.saleRate || part.list_price || part.mrp || 0,
-      listPrice: part.saleRate || part.list_price || part.mrp || 0,
-      taxpercent: part.taxpercent || part.tax || 0,
-      quantity: 1,
-    });
-
-    // 1. Optimistic UI update
-    setCart((cur) => {
-      const existingIndex = cur.findIndex(
-        (c) =>
-          String(c.cartId).toUpperCase() === String(partNo).toUpperCase() ||
-          String(c.code).toUpperCase() === String(partNo).toUpperCase(),
-      );
-      if (existingIndex >= 0) {
-        const copy = [...cur];
-        copy[existingIndex] = {
-          ...copy[existingIndex],
-          qty: copy[existingIndex].qty + 1,
-        };
-        return copy;
-      }
-      return [...cur, newItem];
-    });
-
-    showToast.success(`${part.itemDescription || partNo} added to cart`);
-
-    // 2. Async backend API call & sync
-    try {
-      await catalogueApi.addToCart({
+  const addToCart = useCallback(
+    async (part) => {
+      const partNo = part.partNumber || part.code;
+      const listPrice = part.saleRate || part.list_price || part.mrp || 0;
+      const newItem = normalizeCartItem({
+        partNumber: partNo,
         part_number: partNo,
-        description: part.itemDescription || part.name,
+        itemDescription: part.itemDescription || part.name,
+        brandName: part.brandName || part.brand,
         mrp: part.mrp || 0,
-        list_price: part.saleRate || part.list_price || part.mrp || 0,
-        tax: part.taxpercent || part.tax || 0,
-        qty: 1,
-        brand_name: part.brandName || part.brand || "",
+        saleRate: listPrice,
+        listPrice,
+        taxpercent: part.taxpercent || part.tax || 0,
+        quantity: 1,
       });
-      fetchCart();
-    } catch (err) {
-      console.warn("Backend addToCart error:", err);
-    }
-  }
 
-  async function updateCartQty(cartId, actionOrQty, newQtyVal) {
-    const item = cart.find(
-      (c) =>
-        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
-        String(c.code).toUpperCase() === String(cartId).toUpperCase(),
-    );
-    const partNumber = item?.part_number || item?.code || cartId;
+      // 1. Optimistic UI update
+      setCart((cur) => {
+        const idx = cur.findIndex((c) => matchesCartId(c, partNo));
+        if (idx >= 0) {
+          const copy = [...cur];
+          copy[idx] = { ...copy[idx], qty: copy[idx].qty + 1 };
+          return copy;
+        }
+        return [...cur, newItem];
+      });
 
-    let action = "increase";
-    if (typeof actionOrQty === "string") {
-      action = actionOrQty;
-    } else if (item) {
-      action = actionOrQty > item.qty ? "increase" : "decrease";
-    }
+      showToast.success(`${part.itemDescription || partNo} added to cart`);
 
-    const targetQty =
-      typeof actionOrQty === "number"
-        ? actionOrQty
-        : action === "increase"
-          ? (item?.qty || 0) + 1
-          : Math.max(0, (item?.qty || 1) - 1);
-
-    // Optimistic UI update
-    setCart((cur) => {
-      if (targetQty <= 0) {
-        return cur.filter(
-          (c) =>
-            String(c.cartId).toUpperCase() !== String(cartId).toUpperCase() &&
-            String(c.code).toUpperCase() !== String(cartId).toUpperCase(),
-        );
+      // 2. Async backend API call & sync
+      try {
+        await catalogueApi.addToCart({
+          part_number: partNo,
+          description: part.itemDescription || part.name,
+          mrp: part.mrp || 0,
+          list_price: listPrice,
+          tax: part.taxpercent || part.tax || 0,
+          qty: 1,
+          brand_name: part.brandName || part.brand || "",
+        });
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend addToCart error:", err);
       }
-      return cur.map((c) =>
-        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
-        String(c.code).toUpperCase() === String(cartId).toUpperCase()
-          ? { ...c, qty: targetQty }
-          : c,
+    },
+    [fetchCart],
+  );
+
+  const updateCartQty = useCallback(
+    async (cartId, actionOrQty) => {
+      const item = cartRef.current.find((c) => matchesCartId(c, cartId));
+      const partNumber = item?.part_number || item?.code || cartId;
+
+      let action = "increase";
+      if (typeof actionOrQty === "string") {
+        action = actionOrQty;
+      } else if (item) {
+        action = actionOrQty > item.qty ? "increase" : "decrease";
+      }
+
+      const targetQty =
+        typeof actionOrQty === "number"
+          ? actionOrQty
+          : action === "increase"
+            ? (item?.qty || 0) + 1
+            : Math.max(0, (item?.qty || 1) - 1);
+
+      // Optimistic UI update
+      setCart((cur) =>
+        targetQty <= 0
+          ? cur.filter((c) => !matchesCartId(c, cartId))
+          : cur.map((c) => (matchesCartId(c, cartId) ? { ...c, qty: targetQty } : c)),
       );
-    });
 
-    try {
-      await catalogueApi.updateCartQty(partNumber, action);
-      fetchCart();
-    } catch (err) {
-      console.warn("Backend updateCartQty error:", err);
-    }
-  }
+      try {
+        await catalogueApi.updateCartQty(partNumber, action);
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend updateCartQty error:", err);
+      }
+    },
+    [fetchCart],
+  );
 
-  async function removeFromCart(cartId) {
-    const item = cart.find(
-      (c) =>
-        String(c.cartId).toUpperCase() === String(cartId).toUpperCase() ||
-        String(c.code).toUpperCase() === String(cartId).toUpperCase(),
-    );
-    const partNumber = item?.part_number || item?.code || cartId;
+  const removeFromCart = useCallback(
+    async (cartId) => {
+      const item = cartRef.current.find((c) => matchesCartId(c, cartId));
+      const partNumber = item?.part_number || item?.code || cartId;
 
-    // Optimistic UI update
-    setCart((cur) =>
-      cur.filter(
-        (c) =>
-          String(c.cartId).toUpperCase() !== String(cartId).toUpperCase() &&
-          String(c.code).toUpperCase() !== String(cartId).toUpperCase(),
-      ),
-    );
+      // Optimistic UI update
+      setCart((cur) => cur.filter((c) => !matchesCartId(c, cartId)));
 
-    try {
-      await catalogueApi.removeCartItem(partNumber);
-      showToast.success("Item removed from cart");
-      fetchCart();
-    } catch (err) {
-      console.warn("Backend removeCartItem error:", err);
-    }
-  }
+      try {
+        await catalogueApi.removeCartItem(partNumber);
+        showToast.success("Item removed from cart");
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend removeCartItem error:", err);
+      }
+    },
+    [fetchCart],
+  );
 
   async function checkout() {
-    if (!cart.length) return;
+    if (!cart.length) {
+      showToast.warning("Your cart is empty. Please add parts first.");
+      return;
+    }
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    const customerCode =
+      (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
+      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
+      loggedInUser?.outlet?.customer_code ||
+      loggedInUser?.outlet?.customerCode ||
+      "NMSA0786";
+
+    const payload = {
+      workshopId: String(workshopId).trim(),
+      customer_code: String(customerCode).trim(),
+      source: "GOL",
+      channel: "B2B-API",
+      reference_no: `REF-GOL-${Date.now()}`,
+      vehicle_no:
+        mode === "vehicle" && vahanData?.registrationNumber
+          ? vahanData.registrationNumber
+          : "",
+      parts: cart.map((item) => ({
+        part_no: String(
+          item.part_number || item.code || item.partNumber || item.cartId || item.id
+        ).trim(),
+        qty: Number(item.qty || item.quantity || 1),
+      })),
+    };
+
     try {
-      const res = await catalogueApi.placeOrder();
-      showToast.success("Order placed successfully!");
+      const response = await catalogueApi.createDirectEnquiryOrder(payload);
+
+      const isSuccess =
+        response?.success === true ||
+        Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
+
+      const enqNo =
+        response?.enquiry_no ||
+        response?.data?.enquiry_no ||
+        response?.enquiryNo;
+
+      if (!isSuccess) {
+        const errorMsg =
+          response?.message ||
+          response?.error?.message ||
+          response?.data?.message ||
+          "Failed to place order";
+        showToast.error(errorMsg);
+        return;
+      }
+
+      showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
       setCart([]);
       setTab("orders");
-      catalogueApi
-        .getOrders()
-        .then((res) => setOrders(extractData(res)))
-        .catch(() => {});
+      fetchOrders();
     } catch (err) {
-      console.warn("Backend placeOrder error, fallback local update:", err);
-      const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-      setOrders((cur) => [
-        {
-          enquiryNo,
-          customerCode: "NMSA0786",
-          source: "GOL",
-          status: "PROCESSING",
-          orderCreationDate: new Date().toISOString(),
-        },
-        ...cur,
-      ]);
-      setCart([]);
-      showToast.success(`Order ${enquiryNo} placed.`);
-      setTab("orders");
+      console.error("Backend createDirectEnquiryOrder error:", err);
+      const errorMsg =
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        "Error placing order";
+      showToast.error(errorMsg);
     }
   }
+
   function viewOrder(order) {
-    const detail = ORDER_DETAILS_BY_ENQUIRY[order.enquiryNo] || {
-      enquiry_no: order.enquiryNo,
-      source: order.source,
-      status: order.status,
-      message: "Details not available yet.",
-      reference_no: "",
-      order_nos: [],
-      parts: [],
-    };
-    setOpenOrder(detail);
+    setOpenOrder(order);
   }
 
-  // Breadcrumb sources — both modes are arrays now, so this unifies cleanly.
-  const breadcrumbMakes = mode === "stock" ? stockMakes : vMakes;
-  const breadcrumbModels = mode === "stock" ? stockModels : vModels;
-  const breadcrumbVariant = mode === "vehicle" ? vVariants : [];
-  const breadcrumbFuel = mode === "vehicle" ? vFuels : [];
-  const breadcrumbYear = mode === "vehicle" ? vYears : [];
+  const isVehicle = mode === "vehicle";
 
   return (
     <div className="space-y-4">
@@ -1050,7 +1257,7 @@ export default function Global() {
               <span
                 className={clsx(
                   "text-sm font-semibold uppercase tracking-wide",
-                  mode === "stock" ? "text-ink-800" : "text-ink-400",
+                  !isVehicle ? "text-ink-800" : "text-ink-400",
                 )}
               >
                 Stock Order
@@ -1058,27 +1265,27 @@ export default function Global() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={mode === "vehicle"}
+                aria-checked={isVehicle}
                 onClick={() => {
-                  setMode(mode === "stock" ? "vehicle" : "stock");
+                  setMode(isVehicle ? "stock" : "vehicle");
                   clearAll();
                 }}
                 className={clsx(
                   "relative h-6 cursor-pointer w-11 rounded-full transition-colors",
-                  mode === "vehicle" ? "bg-brand-600" : "bg-ink-300",
+                  isVehicle ? "bg-brand-600" : "bg-ink-300",
                 )}
               >
                 <span
                   className={clsx(
                     "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-                    mode === "vehicle" ? "translate-x-0" : "-translate-x-5",
+                    isVehicle ? "translate-x-0" : "-translate-x-5",
                   )}
                 />
               </button>
               <span
                 className={clsx(
                   "text-sm font-semibold uppercase tracking-wide",
-                  mode === "vehicle" ? "text-ink-800" : "text-ink-400",
+                  isVehicle ? "text-ink-800" : "text-ink-400",
                 )}
               >
                 Vehicle Order
@@ -1106,6 +1313,8 @@ export default function Global() {
                 generation={generation}
                 setGeneration={handleGenerationChange}
                 skipGeneration={skipGeneration}
+                setSkipGeneration={setSkipGeneration}
+                isLoadingGenerations={isLoadingGenerations}
                 onPreviewGen={setPreviewGen}
                 regNo={regNo}
                 setRegNo={setRegNo}
@@ -1128,8 +1337,6 @@ export default function Global() {
                 selectedSubs={selectedSubs}
                 toggleSubChip={toggleSubChip}
                 setSelectedSubs={setSelectedSubs}
-                partQuery={partQuery}
-                setPartQuery={setPartQuery}
                 searchInput={searchInput}
                 setSearchInput={setSearchInput}
                 onSearchSubmit={handleSearchSubmit}
@@ -1142,13 +1349,13 @@ export default function Global() {
             ) : (
               <ExploreArea
                 mode={mode}
-                makes={breadcrumbMakes}
-                models={breadcrumbModels}
+                makes={currentMakes}
+                models={currentModels}
                 generation={generation}
                 skipGeneration={skipGeneration}
-                variants={breadcrumbVariant}
-                fuels={breadcrumbFuel}
-                years={breadcrumbYear}
+                variants={isVehicle ? vVariants : EMPTY_ARRAY}
+                fuels={isVehicle ? vFuels : EMPTY_ARRAY}
+                years={isVehicle ? vYears : EMPTY_ARRAY}
                 selectedCats={selectedCats}
                 selectedSubs={selectedSubs}
                 categoryOptions={categoryOptions}
@@ -1157,19 +1364,17 @@ export default function Global() {
                 onEditSelection={() => setPhase("select")}
                 sort={sort}
                 setSort={setSort}
-                partQuery={partQuery}
-                setPartQuery={setPartQuery}
                 searchInput={searchInput}
                 setSearchInput={setSearchInput}
                 onSearchSubmit={handleSearchSubmit}
                 selectedBrands={selectedBrands}
                 setSelectedBrands={setSelectedBrands}
-                brandOptions={brandOptions}
+                brandOptions={availableBrands}
                 totalParts={totalPartsCount}
                 grouped={grouped}
                 collapsedGroups={collapsedGroups}
                 toggleGroup={toggleGroup}
-                cart={cart}
+                cartLookup={cartLookup}
                 onAdd={addToCart}
                 onQty={updateCartQty}
                 isLoadingParts={isLoadingParts}
@@ -1203,7 +1408,7 @@ export default function Global() {
           <CatalogueOrdersTable
             orders={orders}
             onView={viewOrder}
-            onRefresh={() => showToast.success("Orders refreshed")}
+            onRefresh={fetchOrders}
           />
         </Card>
       )}
@@ -1242,6 +1447,8 @@ export default function Global() {
   );
 }
 
+const EMPTY_ARRAY = [];
+
 /* ─── Selection area ─── */
 
 function SelectionArea({
@@ -1259,6 +1466,8 @@ function SelectionArea({
   generation,
   setGeneration,
   skipGeneration,
+  setSkipGeneration,
+  isLoadingGenerations,
   onPreviewGen,
   regNo,
   setRegNo,
@@ -1281,8 +1490,6 @@ function SelectionArea({
   selectedSubs,
   toggleSubChip,
   setSelectedSubs,
-  partQuery,
-  setPartQuery,
   searchInput,
   setSearchInput,
   onSearchSubmit,
@@ -1292,14 +1499,15 @@ function SelectionArea({
   onExplore,
   canExplore,
 }) {
-  const showModelSlot = mode === "stock" || vMakes.length > 0;
+  const isStock = mode === "stock";
+  const showModelSlot = isStock || vMakes.length > 0;
 
   const chainUnlocked =
-    mode === "vehicle" && vModels.length > 0 && (skipGeneration || generation);
+    !isStock && vModels.length > 0 && (skipGeneration || generation);
 
   return (
     <div className="space-y-6 p-5">
-      {mode === "vehicle" && (
+      {!isStock && (
         <div className="flex flex-col sm:flex-row items-center gap-3 p-4 bg-ink-50 rounded-xl border border-ink-200 mb-6">
           <div className="relative flex-1 w-full">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
@@ -1331,8 +1539,8 @@ function SelectionArea({
           <FilterField label="Make">
             <MultiSelect
               options={makeOptions}
-              value={mode === "stock" ? stockMakes : vMakes}
-              onChange={mode === "stock" ? onStockMakesChange : onVMakesChange}
+              value={isStock ? stockMakes : vMakes}
+              onChange={isStock ? onStockMakesChange : onVMakesChange}
               placeholder="Select Make"
             />
           </FilterField>
@@ -1340,15 +1548,15 @@ function SelectionArea({
             <FilterField label="Model">
               <MultiSelect
                 options={modelOptions}
-                value={mode === "stock" ? stockModels : vModels}
-                onChange={mode === "stock" ? setStockModels : onVModelsChange}
+                value={isStock ? stockModels : vModels}
+                onChange={isStock ? setStockModels : onVModelsChange}
                 placeholder="Select Model"
-                disabled={mode === "stock" ? !stockMakes.length : !vMakes.length}
+                disabled={isStock ? !stockMakes.length : !vMakes.length}
               />
             </FilterField>
           )}
         </div>
-        {mode === "stock" && (
+        {isStock && (
           <>
             <FilterField label="Brand">
               <MultiSelect
@@ -1360,38 +1568,64 @@ function SelectionArea({
             </FilterField>
 
             <div>
-              <div className="relative">
-                <div className="mt-3.5">
-                  <Input
-                    type="text"
-                    value={searchInput}
-                    onChange={(e) => setSearchInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        onSearchSubmit();
-                      }
-                    }}
-                    placeholder="Search parts (e.g., wiper, brake pad)"
-                  />
-                </div>
-                <Search
-                  className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400 cursor-pointer"
-                  onClick={() => onSearchSubmit()}
+              <div className="relative mt-3.5">
+                <Input
+                  type="text"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      onSearchSubmit();
+                    }
+                  }}
+                  placeholder="Search parts (Eg.Brake pad, Wiper, etc..) - min. 4 chars"
+                  className="pr-10"
                 />
+                <button
+                  type="button"
+                  onClick={() => onSearchSubmit()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-ink-400 hover:text-accent-600 transition-colors cursor-pointer"
+                  title="Search parts (min. 4 chars)"
+                >
+                  <Search className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </>
         )}
       </div>
 
-      {mode === "vehicle" && !skipGeneration && vModels.length > 0 && (
+      {!isStock && !skipGeneration && vModels.length > 0 && (
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-500">
-            Generation
-          </p>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">
+              Generation
+            </p>
+            <button
+              type="button"
+              onClick={() => setSkipGeneration(true)}
+              className="text-xs font-medium text-brand-600 hover:text-brand-700 underline cursor-pointer"
+            >
+              Skip Generation
+            </button>
+          </div>
           <div className="flex flex-wrap gap-3">
-            {generationOptions.length === 0 ? (
-              <div className="py-2 text-xs text-ink-400">Loading generations...</div>
+            {isLoadingGenerations ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-ink-400">
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent-500 border-t-transparent" />
+                Loading generations...
+              </div>
+            ) : generationOptions.length === 0 ? (
+              <div className="py-2 text-xs text-ink-400">
+                No generations available for this model.{" "}
+                <button
+                  type="button"
+                  onClick={() => setSkipGeneration(true)}
+                  className="font-medium text-brand-600 hover:text-brand-700 underline cursor-pointer"
+                >
+                  Proceed to variants
+                </button>
+              </div>
             ) : (
               generationOptions.map((g) => {
                 const active = generation === g.value;
@@ -1420,8 +1654,8 @@ function SelectionArea({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onPreviewGen(g)}
-                      className="block w-full cursor-zoom-in"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className="block w-full cursor-pointer text-left"
                     >
                       {g.url ? (
                         <img
@@ -1430,13 +1664,34 @@ function SelectionArea({
                           className="mx-auto h-16 w-auto object-cover"
                           onError={(e) => {
                             e.currentTarget.style.display = "none";
+                            if (e.currentTarget.nextSibling) {
+                              e.currentTarget.nextSibling.style.display = "flex";
+                            }
                           }}
                         />
                       ) : null}
+                      <div
+                        className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg bg-brand-50 text-brand-600"
+                        style={{ display: g.url ? "none" : "flex" }}
+                      >
+                        <Car className="h-8 w-8" />
+                      </div>
                       <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
                         {g.label.split(" (")[0]}
                       </p>
                     </button>
+                    {g.url && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPreviewGen(g);
+                        }}
+                        className="mt-1 block mx-auto text-[10px] text-ink-400 hover:text-ink-600 underline cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                    )}
                   </div>
                 );
               })
@@ -1478,7 +1733,7 @@ function SelectionArea({
         </div>
       )}
 
-      {mode === "vehicle" ? (
+      {!isStock ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_auto]">
           <FilterField label="Categories">
             <MultiSelect
@@ -1515,10 +1770,8 @@ function SelectionArea({
           categoryOptions={categoryOptions}
           selectedCats={selectedCats}
           toggleCategoryChip={toggleCategoryChip}
-          setSelectedCats={setSelectedCats}
           selectedSubs={selectedSubs}
           toggleSubChip={toggleSubChip}
-          setSelectedSubs={setSelectedSubs}
           activeSubcategoryOptions={subcategoryOptions}
           onExplore={onExplore}
           canExplore={canExplore}
@@ -1528,42 +1781,40 @@ function SelectionArea({
   );
 }
 
+function SelectedCount({ count }) {
+  return (
+    <span
+      className={clsx(
+        "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+        count ? "bg-brand-600 text-white" : "bg-brand-100 text-brand-700",
+      )}
+    >
+      {count} selected
+    </span>
+  );
+}
+
 function StockCategoryChips({
   categoryOptions = [],
   selectedCats,
   toggleCategoryChip,
-  setSelectedCats,
   selectedSubs,
   toggleSubChip,
-  setSelectedSubs,
   activeSubcategoryOptions = [],
   onExplore,
   canExplore,
 }) {
-  const catsList = categoryOptions;
   const subsList = activeSubcategoryOptions || [];
-  const allCatsSelected = selectedCats.length === catsList.length;
-  const allSubsSelected =
-    subsList.length > 0 && selectedSubs.length === subsList.length;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div>
         <div className="mb-3 flex items-center gap-2">
           <p className="text-base font-semibold text-ink-800">Categories</p>
-          <span
-            className={clsx(
-              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-              selectedCats.length
-                ? "bg-brand-600 text-white"
-                : "bg-brand-100 text-brand-700",
-            )}
-          >
-            {selectedCats.length} selected
-          </span>
+          <SelectedCount count={selectedCats.length} />
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {catsList.map((c) => {
+          {categoryOptions.map((c) => {
             const active = selectedCats.includes(c.value);
             const Icon = Icons[CAT_ICONS[c.value]] ?? Icons.Settings;
             return (
@@ -1594,16 +1845,7 @@ function StockCategoryChips({
       <div>
         <div className="mb-3 flex items-center gap-2">
           <p className="text-base font-semibold text-ink-800">Sub Categories</p>
-          <span
-            className={clsx(
-              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-              selectedSubs.length
-                ? "bg-brand-600 text-white"
-                : "bg-brand-100 text-brand-700",
-            )}
-          >
-            {selectedSubs.length} selected
-          </span>
+          <SelectedCount count={selectedSubs.length} />
         </div>
         {subsList.length === 0 ? (
           <div className="rounded-lg border border-dashed border-ink-200 px-3 py-6 text-center text-xs text-ink-500">
@@ -1656,6 +1898,98 @@ function StockCategoryChips({
 
 /* ─── Explore area (results) ─── */
 
+const TH_BASE = "px-4 py-2.5";
+
+/** One memoised table row so qty changes only re-render the affected part. */
+const PartRow = memo(function PartRow({ p, qty = 0, cartId, onAdd, onQty }) {
+  const inCart = cartId !== undefined;
+  return (
+    <tr className="border-t border-ink-100">
+      <td className="px-4 py-3">
+        <p className="font-semibold text-ink-800">{p.itemDescription}</p>
+        <p className="mt-0.5 text-xs text-brand-700">{p.partNumber}</p>
+      </td>
+      <td className="px-4 py-3">
+        <span className="inline-block rounded bg-brand-600 px-2.5 py-1 text-[11px] font-semibold text-white">
+          {p.brandName}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-center font-semibold text-ink-800">
+        ₹{p.mrpIncl.toLocaleString("en-IN")}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-600">
+        {p.discPct > 0 ? `${p.discPct}%` : "—"}
+      </td>
+      <td className="px-4 py-3 text-center font-semibold text-ink-800">
+        ₹{p.priceIncl.toLocaleString("en-IN")}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-500">{p.points || "—"}</td>
+      <td className="px-4 py-3 text-center text-ink-500">
+        {p.warrantyDays ? `${p.warrantyDays}d` : "—"}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-500">
+        {p.eda != null ? `${p.eda}d` : "—"}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex justify-center">
+          <CatalogueQtyStepper
+            value={qty}
+            onChange={(v) =>
+              inCart ? onQty(cartId, v) : v > 0 ? onAdd(p) : null
+            }
+            min={0}
+          />
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+function PartsTable({ parts, cartLookup, onAdd, onQty }) {
+  return (
+    <div className="overflow-x-auto ">
+      <table className="w-full min-w-[960px] text-sm">
+        <thead>
+          <tr className="border-t border-ink-100 bg-ink-50/60 text-left text-[11px] font-medium text-ink-500">
+            <th className={TH_BASE}>PART NAME</th>
+            <th className={TH_BASE}>BRAND NAME</th>
+            <th className={clsx(TH_BASE, "text-center")}>
+              MRP
+              <br />
+              <span className="text-[9px] normal-case">(INCL. TAX)</span>
+            </th>
+            <th className={clsx(TH_BASE, "text-center")}>DISC %</th>
+            <th className={clsx(TH_BASE, "text-center")}>
+              BILLING PRICE
+              <br />
+              <span className="text-[9px] normal-case">(INCL. TAX)</span>
+            </th>
+            <th className={clsx(TH_BASE, "text-center")}>MYTVS COINS</th>
+            <th className={clsx(TH_BASE, "text-center")}>WARRANTY</th>
+            <th className={clsx(TH_BASE, "text-center")}>ETD</th>
+            <th className={clsx(TH_BASE, "text-center")}>QUANTITY</th>
+          </tr>
+        </thead>
+        <tbody>
+          {parts.map((p) => {
+            const cartRow = cartLookup.get(up(p.partNumber));
+            return (
+              <PartRow
+                key={p.partNumber}
+                p={p}
+                qty={cartRow?.qty}
+                cartId={cartRow?.cartId}
+                onAdd={onAdd}
+                onQty={onQty}
+              />
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ExploreArea({
   mode,
   makes,
@@ -1673,8 +2007,6 @@ function ExploreArea({
   onEditSelection,
   sort,
   setSort,
-  partQuery,
-  setPartQuery,
   searchInput,
   setSearchInput,
   onSearchSubmit,
@@ -1685,7 +2017,7 @@ function ExploreArea({
   grouped,
   collapsedGroups,
   toggleGroup,
-  cart,
+  cartLookup,
   onAdd,
   onQty,
   isLoadingParts,
@@ -1695,14 +2027,12 @@ function ExploreArea({
   onPageChange,
   onPageSizeChange,
 }) {
-  const catLabels = selectedCats
-    .map((v) => (categoryOptions || []).find((c) => c.value === v)?.label || v)
-    .filter(Boolean);
-  const selectedSubLabels = selectedSubs
-    .map(
-      (value) => (activeSubcategoryOptions || []).find((s) => s.value === value)?.label || value,
-    )
-    .filter(Boolean);
+  const catLabels = selectedCats.map(
+    (v) => categoryOptions.find((c) => c.value === v)?.label || v,
+  );
+  const selectedSubLabels = selectedSubs.map(
+    (v) => activeSubcategoryOptions.find((s) => s.value === v)?.label || v,
+  );
 
   return (
     <div className="p-5">
@@ -1713,22 +2043,16 @@ function ExploreArea({
           <BreadChip>{models.map((m) => String(m).toUpperCase()).join(", ")}</BreadChip>
         )}
         {mode === "vehicle" && !skipGeneration && generation && (
-          <BreadChip>
-            {String(generation).split(" (")[0]}
-          </BreadChip>
+          <BreadChip>{String(generation).split(" (")[0]}</BreadChip>
         )}
         {variants.length > 0 && <BreadChip>{variants.join(", ")}</BreadChip>}
         {fuels.length > 0 && <BreadChip>{fuels.join(", ")}</BreadChip>}
         {years.length > 0 && <BreadChip>{years.join(", ")}</BreadChip>}
         {catLabels.length > 0 && (
-          <BreadChip>
-            {catLabels.map((c) => c.toUpperCase()).join(", ")}
-          </BreadChip>
+          <BreadChip>{catLabels.map((c) => c.toUpperCase()).join(", ")}</BreadChip>
         )}
         {selectedSubLabels.length > 0 && (
-          <BreadChip>
-            {selectedSubLabels.map((c) => c.toUpperCase()).join(", ")}
-          </BreadChip>
+          <BreadChip>{selectedSubLabels.map((c) => c.toUpperCase()).join(", ")}</BreadChip>
         )}
       </div>
 
@@ -1758,28 +2082,32 @@ function ExploreArea({
             value={sort}
             onChange={(e) => setSort(e.target.value)}
             variant="underline"
-            options={[
-              { value: "default", label: "Default" },
-              { value: "price-asc", label: "Price: Low to High" },
-              { value: "price-desc", label: "Price: High to Low" },
-              { value: "disc-desc", label: "Discount: High to Low" },
-            ]}
+            options={SORT_OPTIONS}
           />
         </FilterField>
 
-        {/* <FilterField label=" "> */}
-        <Input
-          type="search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              onSearchSubmit();
-            }
-          }}
-          placeholder="Search Part"
-        />
-        {/* </FilterField> */}
+        <div className="relative">
+          <Input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onSearchSubmit();
+              }
+            }}
+            placeholder="Search Part (min. 4 chars)"
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => onSearchSubmit()}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-ink-400 hover:text-accent-600 transition-colors cursor-pointer"
+            title="Search Part (min. 4 characters)"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        </div>
 
         <div className="flex h-11 items-center">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-sm font-semibold text-ink-700">
@@ -1820,16 +2148,13 @@ function ExploreArea({
                     )}
                     {g.aggLabel}
                   </span>
-                  <span className="text-xs text-brand-700">
-                    {g.count} parts
-                  </span>
+                  <span className="text-xs text-brand-700">{g.count} parts</span>
                 </button>
                 {aggOpen && (
                   <div className="space-y-2 bg-white p-3">
                     {g.subs.map((s) => {
-                      const subOpen = !collapsedGroups.has(
-                        `sub:${g.agg}:${s.sub}`,
-                      );
+                      const subKey = `sub:${g.agg}:${s.sub}`;
+                      const subOpen = !collapsedGroups.has(subKey);
                       return (
                         <div
                           key={s.sub}
@@ -1837,7 +2162,7 @@ function ExploreArea({
                         >
                           <button
                             type="button"
-                            onClick={() => toggleGroup(`sub:${g.agg}:${s.sub}`)}
+                            onClick={() => toggleGroup(subKey)}
                             className="flex w-full cursor-pointer items-center justify-between bg-white px-4 py-2.5"
                           >
                             <span className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-ink-700">
@@ -1853,107 +2178,12 @@ function ExploreArea({
                             </span>
                           </button>
                           {subOpen && (
-                            <div className="overflow-x-auto ">
-                              <table className="w-full min-w-[960px] text-sm">
-                                <thead>
-                                  <tr className="border-t border-ink-100 bg-ink-50/60 text-left text-[11px] font-medium text-ink-500">
-                                    <th className="px-4 py-2.5">PART NAME</th>
-                                    <th className="px-4 py-2.5">BRAND NAME</th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      MRP
-                                      <br />
-                                      <span className="text-[9px] normal-case">
-                                        (INCL. TAX)
-                                      </span>
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      DISC %
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      BILLING PRICE
-                                      <br />
-                                      <span className="text-[9px] normal-case">
-                                        (INCL. TAX)
-                                      </span>
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      MYTVS COINS
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      WARRANTY
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      ETD
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      QUANTITY
-                                    </th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {s.parts.map((p) => {
-                                    const cartRow = cart.find(
-                                      (c) => String(c.cartId).toUpperCase() === String(p.partNumber).toUpperCase() || String(c.code).toUpperCase() === String(p.partNumber).toUpperCase() || String(c.part_number).toUpperCase() === String(p.partNumber).toUpperCase(),
-                                    );
-                                    return (
-                                      <tr
-                                        key={p.partNumber}
-                                        className="border-t border-ink-100"
-                                      >
-                                        <td className="px-4 py-3">
-                                          <p className="font-semibold text-ink-800">
-                                            {p.itemDescription}
-                                          </p>
-                                          <p className="mt-0.5 text-xs text-brand-700">
-                                            {p.partNumber}
-                                          </p>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                          <span className="inline-block rounded bg-brand-600 px-2.5 py-1 text-[11px] font-semibold text-white">
-                                            {p.brandName}
-                                          </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{p.mrpIncl.toLocaleString("en-IN")}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-600">
-                                          {p.discPct > 0 ? `${p.discPct}%` : "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{p.priceIncl.toLocaleString("en-IN")}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.points || "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.warrantyDays
-                                            ? `${p.warrantyDays}d`
-                                            : "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.eda != null ? `${p.eda}d` : "—"}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                          <div className="flex justify-center">
-                                            <CatalogueQtyStepper
-                                              value={cartRow?.qty ?? 0}
-                                              onChange={(v) =>
-                                                cartRow
-                                                  ? onQty(cartRow.cartId, v)
-                                                  : v > 0
-                                                    ? onAdd(p)
-                                                    : null
-                                              }
-                                              min={0}
-                                            />
-                                          </div>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
+                            <PartsTable
+                              parts={s.parts}
+                              cartLookup={cartLookup}
+                              onAdd={onAdd}
+                              onQty={onQty}
+                            />
                           )}
                         </div>
                       );
@@ -1993,24 +2223,10 @@ function FilterField({ label, children }) {
   );
 }
 
-
-
 function BreadChip({ children }) {
   return (
     <span className="inline-block rounded-md border border-ink-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-ink-700">
       {children}
     </span>
   );
-}
-
-/** Bump qty + recompute money on a cart row. */
-function bumpQty(row, delta, taxPercent) {
-  const qty = Math.max(1, row.qty + delta);
-  const tax = row.saleRate * ((taxPercent ?? 18) / 100) * qty;
-  return {
-    ...row,
-    qty,
-    tax: +tax.toFixed(2),
-    totalAmount: +(row.saleRate * qty + tax).toFixed(2),
-  };
 }

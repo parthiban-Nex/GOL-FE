@@ -6,7 +6,7 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold text-ink-800">My Orders</h2>
-        <Button icon={RefreshCw} onClick={onRefresh}>
+        <Button onClick={onRefresh}>
           Refresh
         </Button>
       </div>
@@ -34,46 +34,62 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
                 </td>
               </tr>
             )}
-            {orders.map((o) => (
-              <tr
-                key={o.enquiryNo}
-                className="border-b border-ink-100 last:border-b-0 hover:bg-ink-50/40"
-              >
-                <td className="px-3 py-4">
-                  <button
-                    type="button"
-                    onClick={() => onView?.(o)}
-                    className="font-semibold text-brand-700 hover:text-brand-900"
-                  >
-                    {o.enquiryNo}
-                  </button>
-                </td>
-                <td className="px-3 py-4 text-ink-700">
-                  {o.customerCode ?? "—"}
-                </td>
-                <td className="px-3 py-4 text-ink-700">{o.source ?? "GOL"}</td>
-                <td className="px-3 py-4">
-                  <span className="text-sm font-bold uppercase tracking-wide text-accent-600">
-                    {o.status}
-                  </span>
-                </td>
-                <td className="px-3 py-4 text-ink-600">
-                  {formatDate(o.orderCreationDate)}
-                </td>
-                <td className="px-3 py-4">
-                  <div className="flex justify-center">
+            {orders.map((o) => {
+              const enqNo = o.enquiryNo || o.enquiry_no || o.id;
+              const isCompleted =
+                String(o.status || "").toUpperCase() === "COMPLETED" ||
+                String(o.status || "").toUpperCase() === "DELIVERED";
+
+              return (
+                <tr
+                  key={enqNo}
+                  className="border-b border-ink-100 last:border-b-0 hover:bg-ink-50/40"
+                >
+                  <td className="px-3 py-4">
                     <button
                       type="button"
                       onClick={() => onView?.(o)}
-                      className="flex h-8 cursor-pointer w-10 items-center justify-center rounded-md border border-accent-500 text-accent-600 hover:bg-accent-50"
-                      aria-label={`View ${o.enquiryNo}`}
+                      className="font-semibold text-brand-700 hover:text-brand-900 cursor-pointer"
                     >
-                      <Eye className="h-4 w-4" />
+                      {enqNo}
                     </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-3 py-4 text-ink-700">
+                    {o.customerCode || o.customer_code || "—"}
+                  </td>
+                  <td className="px-3 py-4 text-ink-700">{o.source || "GOL"}</td>
+                  <td className="px-3 py-4">
+                    <span
+                      className={`text-sm font-bold uppercase tracking-wide ${
+                        isCompleted ? "text-emerald-600" : "text-accent-600"
+                      }`}
+                    >
+                      {o.status || "PROCESSING"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-4 text-ink-600">
+                    {formatDate(
+                      o.orderCreationDate ||
+                        o.createdOn ||
+                        o.createdAt ||
+                        o.order_creation_date
+                    )}
+                  </td>
+                  <td className="px-3 py-4">
+                    <div className="flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => onView?.(o)}
+                        className="flex h-8 cursor-pointer w-10 items-center justify-center rounded-md border border-accent-500 text-accent-600 hover:bg-accent-50 transition-colors"
+                        aria-label={`View ${enqNo}`}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

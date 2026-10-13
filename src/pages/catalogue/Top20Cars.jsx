@@ -11,8 +11,18 @@ import CatalogueCartTable from "@/components/catalogue/CatalogueCartTable";
 import CatalogueOrdersTable from "@/components/catalogue/CatalogueOrdersTable";
 import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
-import { catalogueApi } from "@/services/api/catalogueApi";
+import {
+  catalogueApi,
+  getCalculatedSaleRate,
+  formatDisplayPartNo,
+  TIER_DISCOUNTS,
+  isPartMatchingSearch,
+} from "@/services/api/catalogueApi";
 import { showToast } from "@/utils/toast";
+import { storage } from "@/utils/storage";
+import { appConfig } from "@/config/appConfig";
+
+const CUSTOMER_CODE = "050";
 
 const BRAND_GROUP_TABS = [
   { value: "all", label: "All" },
@@ -166,10 +176,25 @@ function groupPartsByComponent(data) {
     return items;
   }
 
-  const map = new Map();
+  // 1. Group items by component into tier arrays so no parts are overwritten
+  const componentMap = new Map();
+  const seenPartKeys = new Set();
 
   items.forEach((item, index) => {
     if (!item || typeof item !== "object") return;
+
+    const rawPartNumber = String(item.partNumber || item.oemPartNumber || item.code || "").trim();
+    const brandStr = String(item.brandName || item.brand || "").trim().toUpperCase();
+
+    // Deduplicate identical part records from backend response
+    const dedupeKey = rawPartNumber
+      ? `${rawPartNumber.toUpperCase()}__${brandStr}`
+      : `item_${index}`;
+
+    if (seenPartKeys.has(dedupeKey)) {
+      return; // Skip duplicate part
+    }
+    seenPartKeys.add(dedupeKey);
 
     const compName = (
       item.components ||
@@ -181,19 +206,18 @@ function groupPartsByComponent(data) {
 
     const groupKey = compName.toLowerCase();
 
-    if (!map.has(groupKey)) {
-      map.set(groupKey, {
-        rowId: `row_${index}_${groupKey.replace(/\s+/g, "_")}`,
+    if (!componentMap.has(groupKey)) {
+      componentMap.set(groupKey, {
         components: compName,
         aggregate: item.aggregate || "",
         subAggregate: item.subAggregate || "",
-        oem: null,
-        primary: null,
-        secondary: null,
+        oem: [],
+        primary: [],
+        secondary: [],
       });
     }
 
-    const row = map.get(groupKey);
+    const compGroup = componentMap.get(groupKey);
 
     const groupFlag = String(
       item.salesPriceGroup || item.priceGroup || item.group || item.tier || ""
@@ -210,28 +234,68 @@ function groupPartsByComponent(data) {
       tierKey = "primary";
     }
 
-    const mrpVal = parseFloat(item.mrp || item.listPrice || 0);
-    const saleRateVal = parseFloat(item.listPrice || item.mrp || 0);
+    const discountPct =
+      item.partConfig?.discountPercent !== undefined &&
+        item.partConfig?.discountPercent !== null
+        ? Number(item.partConfig.discountPercent)
+        : (TIER_DISCOUNTS[tierKey] ? TIER_DISCOUNTS[tierKey] * 100 : 0);
+
+    const mrpVal = Number(item.mrp || item.listPrice || 0);
+    const saleRateVal = getCalculatedSaleRate(mrpVal, tierKey, discountPct);
+    const lineCode = item.lineCode || "";
+    const displayPartNo = formatDisplayPartNo(rawPartNumber, lineCode);
 
     const tierPart = {
-      code: item.partNumber || item.oemPartNumber || item.code || "-",
+      code: rawPartNumber,
+      partNumber: rawPartNumber,
+      displayPartNo: displayPartNo || rawPartNumber,
       brand: item.brandName || item.brand || "-",
       mrp: mrpVal,
       saleRate: saleRateVal,
+      discountPercent: discountPct,
       discountPerUnit: +(mrpVal - saleRateVal).toFixed(2),
       golSavings: +(mrpVal - saleRateVal).toFixed(2),
       taxPercent: parseFloat(item.taxpercent || 18),
       warranty: item.warrantyDays ? `${item.warrantyDays} Days` : "No warranty",
+      warrantyDays: item.warrantyDays || 0,
       coins: item.partConfig?.loyaltyBasePoints || item.points || 0,
-      etd: item.EDA !== undefined ? `${item.EDA} Days` : "Instant",
       points: item.partConfig?.loyaltyBasePoints || item.points || 0,
+      etd: item.EDA !== undefined ? `${item.EDA} Days` : "Instant",
+      eda: item.EDA !== undefined ? item.EDA : null,
+      lineCode,
       raw: item,
+      tierType: tierKey,
     };
 
-    row[tierKey] = tierPart;
+    compGroup[tierKey].push(tierPart);
   });
 
-  return Array.from(map.values());
+  // 2. Flatten each component group into rows (one slot per index if multiple parts exist in a tier)
+  const resultRows = [];
+  let rowCounter = 0;
+
+  componentMap.forEach((compGroup, groupKey) => {
+    const maxLen = Math.max(
+      compGroup.oem.length,
+      compGroup.primary.length,
+      compGroup.secondary.length,
+      1
+    );
+
+    for (let slot = 0; slot < maxLen; slot++) {
+      resultRows.push({
+        rowId: `row_${rowCounter++}_${groupKey.replace(/[^a-z0-9]/gi, "_")}_${slot}`,
+        components: compGroup.components,
+        aggregate: compGroup.aggregate,
+        subAggregate: compGroup.subAggregate,
+        oem: compGroup.oem[slot] || null,
+        primary: compGroup.primary[slot] || null,
+        secondary: compGroup.secondary[slot] || null,
+      });
+    }
+  });
+
+  return resultRows;
 }
 
 function normalizeCartItem(item) {
@@ -318,10 +382,32 @@ export default function Top20Cars() {
       });
   };
 
-  // 1. Fetch Makes, Top 20 Cars & Cart on mount
+  const fetchOrders = async () => {
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    try {
+      const res = await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+      const list = res?.data || res?.orders || extractData(res);
+      if (Array.isArray(list)) {
+        setOrders(list);
+      }
+    } catch (err) {
+      console.warn("Error fetching direct enquiry orders:", err);
+    }
+  };
+
+  // 1. Fetch Makes, Top 20 Cars, Cart & Orders on mount
   useEffect(() => {
     catalogueApi
-      .getMakes()
+      .getMakes({ customerCode: CUSTOMER_CODE })
       .then((res) => setMakeOptions(toOptions(res, "make", "make")))
       .catch(() => setMakeOptions([]));
 
@@ -336,12 +422,15 @@ export default function Top20Cars() {
       .catch(() => { });
 
     fetchCart();
-
-    catalogueApi
-      .getOrders()
-      .then((res) => setOrders(extractData(res)))
-      .catch(() => setOrders([]));
+    fetchOrders();
   }, []);
+
+  // Fetch orders whenever user switches to the orders tab
+  useEffect(() => {
+    if (tab === "orders") {
+      fetchOrders();
+    }
+  }, [tab]);
 
   // 2. Fetch Models when Makes change
   useEffect(() => {
@@ -350,7 +439,7 @@ export default function Top20Cars() {
       return;
     }
     catalogueApi
-      .getModels({ make: makes })
+      .getModels({ customerCode: CUSTOMER_CODE, make: makes })
       .then((res) => setModelOptions(toOptions(res, "model", "model")))
       .catch(() => setModelOptions([]));
   }, [makes]);
@@ -362,7 +451,7 @@ export default function Top20Cars() {
       return;
     }
     catalogueApi
-      .getGenerations({ make: makes, model: models })
+      .getGenerations({ customerCode: CUSTOMER_CODE, make: makes, model: models })
       .then((res) => setGenerationOptions(toGenerations(res)))
       .catch(() => setGenerationOptions([]));
   }, [makes, models]);
@@ -375,6 +464,7 @@ export default function Top20Cars() {
     }
     catalogueApi
       .getVariants({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
@@ -391,12 +481,19 @@ export default function Top20Cars() {
     }
     catalogueApi
       .getFuels({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
         variant: variants,
       })
-      .then((res) => setFuelOptions(toOptions(res, "fuelType", "fuelType")))
+      .then((res) => {
+        const opts = toOptions(res, "fuelType", "fuelType");
+        setFuelOptions(opts);
+        if (opts.length === 1) {
+          setFuels([opts[0].value]);
+        }
+      })
       .catch(() => setFuelOptions([]));
   }, [makes, models, generation, variants]);
 
@@ -408,6 +505,7 @@ export default function Top20Cars() {
     }
     catalogueApi
       .getYears({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
@@ -426,6 +524,7 @@ export default function Top20Cars() {
     }
     catalogueApi
       .getCategories({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
@@ -447,6 +546,7 @@ export default function Top20Cars() {
     }
     catalogueApi
       .getSubcategories({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
@@ -479,6 +579,7 @@ export default function Top20Cars() {
     setIsLoadingParts(true);
     catalogueApi
       .getPartsList({
+        customerCode: CUSTOMER_CODE,
         make: makes,
         model: models,
         vehicleGeneration: generation,
@@ -566,23 +667,64 @@ export default function Top20Cars() {
   const activeTiers = brandGroups.includes("all") ? TIER_ORDER : brandGroups;
 
   const filteredRows = useMemo(() => {
-    const q = partQuery.trim().toLowerCase();
     let rows = partsList.filter((r) => {
       if (categories.length && !categories.includes(r.aggregate)) return false;
       if (subcategories.length && !subcategories.includes(r.subAggregate))
         return false;
       return true;
     });
+
     if (!brandGroups.includes("all")) {
       rows = rows.filter((r) => activeTiers.some((g) => Boolean(r[g])));
     }
+
     if (selectedBrands.length) {
       rows = rows.filter((r) =>
         activeTiers.some((k) => r[k] && selectedBrands.includes(r[k].brand)),
       );
     }
-    if (q) rows = rows.filter((r) => r.components?.toLowerCase().includes(q));
-    return rows;
+
+    const query = String(partQuery || "").trim().toLowerCase();
+    if (!query) return rows;
+
+    return rows.filter((row) => {
+      // 1. Match component name / subAggregate / aggregate
+      const componentName = String(
+        row.components || row.componentName || row.subAggregate || row.aggregate || row.name || ""
+      ).toLowerCase();
+      if (componentName.includes(query)) {
+        return true;
+      }
+
+      // 2. Check OEM part column
+      const oemPart = row.oem || row.oemPart;
+      if (isPartMatchingSearch(oemPart, query)) {
+        return true;
+      }
+
+      // 3. Check Vendor Primary part column
+      const primaryPart = row.primary || row.primaryPart;
+      if (isPartMatchingSearch(primaryPart, query)) {
+        return true;
+      }
+
+      // 4. Check Vendor Secondary part column
+      const secondaryPart = row.secondary || row.secondaryPart;
+      if (isPartMatchingSearch(secondaryPart, query)) {
+        return true;
+      }
+
+      // 5. Check if row contains secondaryParts or raw parts array
+      if (Array.isArray(row.secondaryParts) && row.secondaryParts.some((p) => isPartMatchingSearch(p, query))) {
+        return true;
+      }
+
+      if (Array.isArray(row.parts) && row.parts.some((p) => isPartMatchingSearch(p, query))) {
+        return true;
+      }
+
+      return false;
+    });
   }, [
     partsList,
     categories,
@@ -634,11 +776,17 @@ export default function Top20Cars() {
     const tier = row[tierKey];
     if (!tier || !tier.code) return;
     const partNo = tier.code;
+    const mrp = Number(tier.mrp || 0);
+    const saleRate = tier.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier.discountPercent);
     const payload = {
+      ...(tier.raw || {}),
       part_number: partNo,
       description: row.components,
-      mrp: tier.mrp || 0,
-      list_price: tier.saleRate || tier.mrp || 0,
+      tierType: tierKey,
+      mrp,
+      saleRate,
+      list_price: saleRate,
+      quantity: 1,
       tax: tier.taxPercent || 18,
       qty: 1,
       brand_name: tier.brand || "",
@@ -661,13 +809,17 @@ export default function Top20Cars() {
         return [
           ...cur,
           normalizeCartItem({
+            ...payload,
             part_number: partNo,
             part_desc: row.components,
             product_brand: tier.brand,
-            part_mrp: tier.mrp,
-            list_price: tier.saleRate,
+            mrp,
+            saleRate,
+            list_price: saleRate,
+            tierType: tierKey,
             tax: tier.taxPercent || 18,
             qty: 1,
+            quantity: 1,
           }),
         ];
       });
@@ -698,11 +850,11 @@ export default function Top20Cars() {
           cur.map((c) =>
             c.cartId === cartId || c.code === cartId
               ? {
-                  ...c,
-                  qty:
-                    targetQty ||
-                    (action === "increase" ? c.qty + 1 : Math.max(1, c.qty - 1)),
-                }
+                ...c,
+                qty:
+                  targetQty ||
+                  (action === "increase" ? c.qty + 1 : Math.max(1, c.qty - 1)),
+              }
               : c
           )
         );
@@ -725,45 +877,82 @@ export default function Top20Cars() {
   }
 
   async function checkout() {
-    if (!cart.length) return;
+    if (!cart.length) {
+      showToast.warning("Your cart is empty. Please add parts first.");
+      return;
+    }
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    const customerCode =
+      (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
+      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
+      loggedInUser?.outlet?.customer_code ||
+      loggedInUser?.outlet?.customerCode ||
+      "NMSA0786";
+
+    const payload = {
+      workshopId: String(workshopId).trim(),
+      customer_code: String(customerCode).trim(),
+      source: "GOL",
+      channel: "B2B-API",
+      reference_no: `REF-GOL-${Date.now()}`,
+      vehicle_no: "",
+      parts: cart.map((item) => ({
+        part_no: String(
+          item.part_number || item.code || item.partNumber || item.cartId || item.id
+        ).trim(),
+        qty: Number(item.qty || item.quantity || 1),
+      })),
+    };
+
     try {
-      const res = await catalogueApi.placeOrder();
-      showToast.success("Order placed successfully!");
+      const response = await catalogueApi.createDirectEnquiryOrder(payload);
+
+      const isSuccess =
+        response?.success === true ||
+        Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
+
+      const enqNo =
+        response?.enquiry_no ||
+        response?.data?.enquiry_no ||
+        response?.enquiryNo;
+
+      if (!isSuccess) {
+        const errorMsg =
+          response?.message ||
+          response?.error?.message ||
+          response?.data?.message ||
+          "Failed to place order";
+        showToast.error(errorMsg);
+        return;
+      }
+
+      showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
       setCart([]);
       setTab("orders");
-      catalogueApi
-        .getOrders()
-        .then((res) => setOrders(extractData(res)))
-        .catch(() => {});
+      fetchOrders();
     } catch (err) {
-      console.warn("Backend placeOrder error, fallback local update:", err);
-      const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-      setOrders((cur) => [
-        {
-          enquiryNo,
-          customerCode: "NMSA0786",
-          source: "GOL",
-          status: "PROCESSING",
-          orderCreationDate: new Date().toISOString(),
-        },
-        ...cur,
-      ]);
-      setCart([]);
-      showToast.success(`Order ${enquiryNo} placed.`);
-      setTab("orders");
+      console.error("Backend createDirectEnquiryOrder error:", err);
+      const errorMsg =
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        "Error placing order";
+      showToast.error(errorMsg);
     }
   }
+
   function viewOrder(order) {
-    const detail = ORDER_DETAILS_BY_ENQUIRY[order.enquiryNo] || {
-      enquiry_no: order.enquiryNo,
-      source: order.source,
-      status: order.status,
-      message: "Details not available yet.",
-      reference_no: "",
-      order_nos: [],
-      parts: [],
-    };
-    setOpenOrder(detail);
+    setOpenOrder(order);
   }
 
   return (
@@ -871,7 +1060,7 @@ export default function Top20Cars() {
           <CatalogueOrdersTable
             orders={orders}
             onView={viewOrder}
-            onRefresh={() => showToast.success("Orders refreshed")}
+            onRefresh={fetchOrders}
           />
         </Card>
       )}
@@ -1156,6 +1345,19 @@ function ExplorePhase({
   const brandOptions = availableBrands.map((b) => ({ value: b, label: b }));
   const activeTiers = brandGroups.includes("all") ? TIER_ORDER : brandGroups;
 
+  const totalPartsCount = useMemo(() => {
+    let count = 0;
+    for (const r of rows) {
+      for (const t of activeTiers) {
+        const part = r[t];
+        if (part && (!selectedBrands.length || selectedBrands.includes(part.brand))) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }, [rows, activeTiers, selectedBrands]);
+
   return (
     <div className="p-5">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -1236,7 +1438,7 @@ function ExplorePhase({
           <div className="self-end">
             <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-700">
               <Icons.PackageOpen className="h-4 w-4 text-accent-500" />
-              <span className="font-bold">{rows.length}</span> parts
+              <span className="font-bold">{totalPartsCount}</span> parts
             </span>
           </div>
         </div>
@@ -1383,10 +1585,10 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
                     onQty={(v) =>
                       cartRow
                         ? onQty(
-                            cartRow.cartId || cartRow.code || tier?.code,
-                            v > cartRow.qty ? "increase" : "decrease",
-                            v,
-                          )
+                          cartRow.cartId || cartRow.code || tier?.code,
+                          v > cartRow.qty ? "increase" : "decrease",
+                          v,
+                        )
                         : v > 0
                           ? onAdd(row, tierKey)
                           : null
@@ -1448,6 +1650,11 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
       </td>
     );
   }
+
+  const mrp = Number(tier.mrp || 0);
+  const saleRate = tier.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier.discountPercent);
+  const partNo = tier.displayPartNo || formatDisplayPartNo(tier.partNumber || tier.code, tier.lineCode);
+
   return (
     <>
       {colKeys.map((k, i) => {
@@ -1462,7 +1669,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td key={k} className={cellCls}>
                 <span className="text-xs font-semibold text-ink-800">
-                  {tier.code}
+                  {partNo || tier.code}
                 </span>
               </td>
             );
@@ -1475,7 +1682,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
           case "mrp":
             return (
               <td key={k} className={clsx(cellCls, "text-center text-ink-700")}>
-                ₹{Math.round(tier.mrp).toLocaleString("en-IN")}
+                ₹{Math.round(mrp).toLocaleString("en-IN")}
               </td>
             );
           case "saleRate":
@@ -1487,7 +1694,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
                   "text-center font-semibold text-ink-800",
                 )}
               >
-                ₹{Math.round(tier.saleRate).toLocaleString("en-IN")}
+                ₹{Math.round(saleRate).toLocaleString("en-IN")}
               </td>
             );
           case "qty":
@@ -1592,6 +1799,9 @@ function TierTable({
         <tbody>
           {rows.map((row) => {
             const tier = row[tierKey];
+            const mrp = Number(tier?.mrp || 0);
+            const saleRate = tier?.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier?.discountPercent);
+            const partNo = tier?.displayPartNo || formatDisplayPartNo(tier?.partNumber || tier?.code, tier?.lineCode);
             const cartRow = cart.find(
               (c) =>
                 c.cartId === tier?.code ||
@@ -1603,10 +1813,10 @@ function TierTable({
             const handleQty = (v) =>
               cartRow
                 ? onQty(
-                    cartRow.cartId || cartRow.code || tier?.code,
-                    v > cartRow.qty ? "increase" : "decrease",
-                    v,
-                  )
+                  cartRow.cartId || cartRow.code || tier?.code,
+                  v > cartRow.qty ? "increase" : "decrease",
+                  v,
+                )
                 : v > 0
                   ? onAdd(row, tierKey)
                   : null;
@@ -1627,7 +1837,7 @@ function TierTable({
                   <>
                     <td className="px-3 py-4">
                       <span className="text-xs font-semibold text-ink-800">
-                        {tier.code}
+                        {partNo || tier.code}
                       </span>
                     </td>
                     {showBrand && (
@@ -1636,10 +1846,10 @@ function TierTable({
                       </td>
                     )}
                     <td className="px-3 py-4 text-center text-ink-700">
-                      ₹{Math.round(tier.mrp).toLocaleString("en-IN")}
+                      ₹{Math.round(mrp).toLocaleString("en-IN")}
                     </td>
                     <td className="px-3 py-4 text-center font-semibold text-ink-800">
-                      ₹{Math.round(tier.saleRate).toLocaleString("en-IN")}
+                      ₹{Math.round(saleRate).toLocaleString("en-IN")}
                     </td>
                     <td className="px-3 py-4">
                       <div className="flex justify-center">

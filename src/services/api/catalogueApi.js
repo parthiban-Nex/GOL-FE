@@ -1,6 +1,67 @@
 import { axiosClient } from "@/services";
 import { env } from "@/config/env";
 
+export const TIER_DISCOUNTS = {
+  oem: 0.04,        // 4% discount
+  primary: 0.13,    // 13% discount
+  secondary: 0.20,  // 20% discount
+};
+
+export function getCalculatedSaleRate(mrp, tierType, discountPercent = null) {
+  const numericMrp = Number(mrp) || 0;
+  if (numericMrp <= 0) return numericMrp;
+
+  // 1. If discountPercent is provided (e.g. from partConfig.discountPercent in response)
+  if (discountPercent !== null && discountPercent !== undefined && !isNaN(Number(discountPercent))) {
+    const rate = Number(discountPercent) / 100;
+    return Math.round(numericMrp * (1 - rate));
+  }
+
+  // 2. Otherwise fallback to tier-based default discount
+  if (!tierType) return numericMrp;
+  const rawTier = String(tierType).trim().toLowerCase();
+  let discountRate = 0;
+  if (rawTier.includes('oem')) {
+    discountRate = TIER_DISCOUNTS.oem;
+  } else if (rawTier.includes('secondary')) {
+    discountRate = TIER_DISCOUNTS.secondary;
+  } else if (rawTier.includes('primary')) {
+    discountRate = TIER_DISCOUNTS.primary;
+  }
+  if (!discountRate) return numericMrp;
+  return Math.round(numericMrp * (1 - discountRate));
+}
+
+export function formatDisplayPartNo(partNumber, lineCode = '') {
+  if (!partNumber) return '';
+  let str = String(partNumber).trim();
+  if (lineCode && str.startsWith(String(lineCode).trim())) {
+    str = str.slice(String(lineCode).trim().length);
+  }
+  return str.replace(/^(215|216|055|703)/, '');
+}
+
+export function isPartMatchingSearch(part, query) {
+  if (!part) return false;
+  if (!query) return true;
+  const q = String(query).trim().toLowerCase();
+  const cleanQ = q.replace(/[^a-zA-Z0-9]/g, "");
+  const rawPartNo = String(part.partNumber || part.part_number || part.code || "").trim().toLowerCase();
+  const displayPartNo = String(part.displayPartNo || formatDisplayPartNo(rawPartNo, part.lineCode)).trim().toLowerCase();
+  const cleanRaw = rawPartNo.replace(/[^a-zA-Z0-9]/g, "");
+  const cleanDisplay = displayPartNo.replace(/[^a-zA-Z0-9]/g, "");
+  const desc = String(part.itemDescription || part.part_desc || part.description || part.name || "").toLowerCase();
+  const brand = String(part.brandName || part.brand || part.brand_name || "").toLowerCase();
+  return (
+    rawPartNo.includes(q) ||
+    displayPartNo.includes(q) ||
+    (cleanQ ? cleanRaw.includes(cleanQ) : false) ||
+    (cleanQ ? cleanDisplay.includes(cleanQ) : false) ||
+    desc.includes(q) ||
+    brand.includes(q)
+  );
+}
+
 function normalizePayload(params = {}) {
   const payload = {};
 
@@ -18,90 +79,84 @@ function normalizePayload(params = {}) {
     }
   });
 
-  if (payload.make) {
-    if (Array.isArray(payload.make)) {
-      payload.makes = payload.make;
-      payload.makeName = payload.make[0];
-      payload.make = payload.make[0];
-    } else {
-      payload.makes = [payload.make];
-      payload.makeName = payload.make;
-    }
+  const codeVal = payload.customerCode || payload.customerCodes;
+  if (codeVal) {
+    const strVal = Array.isArray(codeVal) ? String(codeVal[0]) : String(codeVal);
+    payload.customerCode = strVal;
+    payload.customerCodes = [strVal];
   }
 
-  if (payload.model) {
-    if (Array.isArray(payload.model)) {
-      payload.models = payload.model;
-      payload.modelName = payload.model[0];
-      payload.model = payload.model[0];
-    } else {
-      payload.models = [payload.model];
-      payload.modelName = payload.model;
-    }
+  const makeVal = payload.make || payload.makes || payload.makeName || payload.makesName;
+  if (makeVal) {
+    const arr = Array.isArray(makeVal) ? makeVal : [makeVal];
+    payload.make = arr;
+    payload.makes = arr;
+    payload.makeName = arr[0];
   }
 
-  if (payload.aggregate || payload.category) {
-    const catVal = payload.aggregate || payload.category;
-    if (Array.isArray(catVal)) {
-      payload.aggregate = catVal;
-      payload.category = catVal[0];
-      payload.categories = catVal;
-    } else {
-      payload.aggregate = catVal;
-      payload.category = catVal;
-      payload.categories = [catVal];
-    }
+  const modelVal = payload.model || payload.models || payload.modelName || payload.modelsName;
+  if (modelVal) {
+    const arr = Array.isArray(modelVal) ? modelVal : [modelVal];
+    payload.model = arr;
+    payload.models = arr;
+    payload.modelName = arr[0];
   }
 
-  if (payload.subAggregate || payload.subcategory) {
-    const subVal = payload.subAggregate || payload.subcategory;
-    if (Array.isArray(subVal)) {
-      payload.subAggregate = subVal;
-      payload.subcategory = subVal[0];
-      payload.subcategories = subVal;
-    } else {
-      payload.subAggregate = subVal;
-      payload.subcategory = subVal;
-      payload.subcategories = [subVal];
-    }
+  const brandVal = payload.brand || payload.brands || payload.brandName || payload.brandsName;
+  if (brandVal) {
+    const arr = Array.isArray(brandVal) ? brandVal : [brandVal];
+    payload.brand = arr;
+    payload.brands = arr;
+    payload.brandName = arr[0];
   }
 
-  if (payload.variant) {
-    if (Array.isArray(payload.variant)) {
-      payload.variants = payload.variant;
-      payload.variant = payload.variant[0];
-    } else {
-      payload.variants = [payload.variant];
-    }
+  const catVal = payload.aggregate || payload.category || payload.categories || payload.aggregates;
+  if (catVal) {
+    const arr = Array.isArray(catVal) ? catVal : [catVal];
+    payload.aggregate = arr;
+    payload.category = arr[0];
+    payload.categories = arr;
   }
 
-  if (payload.fuelType || payload.fuel) {
-    const fVal = payload.fuelType || payload.fuel;
-    if (Array.isArray(fVal)) {
-      payload.fuels = fVal;
-      payload.fuelType = fVal[0];
-      payload.fuel = fVal[0];
-    } else {
-      payload.fuels = [fVal];
-      payload.fuelType = fVal;
-      payload.fuel = fVal;
-    }
+  const subVal = payload.subAggregate || payload.subcategory || payload.subcategories || payload.subCategory || payload.subCategories || payload.subAggregates;
+  if (subVal) {
+    const arr = Array.isArray(subVal) ? subVal : [subVal];
+    payload.subAggregate = arr;
+    payload.subcategory = arr[0];
+    payload.subcategories = arr;
   }
 
-  if (payload.year) {
-    if (Array.isArray(payload.year)) {
-      payload.years = payload.year;
-      payload.year = String(payload.year[0]);
-    } else {
-      payload.years = [String(payload.year)];
-      payload.year = String(payload.year);
-    }
+  const varVal = payload.variant || payload.variants;
+  if (varVal) {
+    const arr = Array.isArray(varVal) ? varVal : [varVal];
+    payload.variant = arr;
+    payload.variants = arr;
+  }
+
+  const fuelVal = payload.fuelType || payload.fuel || payload.fuels;
+  if (fuelVal) {
+    const arr = Array.isArray(fuelVal) ? fuelVal : [fuelVal];
+    payload.fuelType = arr;
+    payload.fuel = arr[0];
+    payload.fuels = arr;
+  }
+
+  const yrVal = payload.year || payload.years;
+  if (yrVal) {
+    const arr = Array.isArray(yrVal) ? yrVal.map(String) : [String(yrVal)];
+    payload.year = arr;
+    payload.years = arr;
   }
 
   return payload;
 }
 
 export const catalogueApi = {
+  TIER_DISCOUNTS,
+  getCalculatedSaleRate,
+  formatDisplayPartNo,
+  isPartMatchingSearch,
+
   // ─── Top 20 Cars ────────────────────────────────────────────────────────
   getTop20Cars() {
     return axiosClient.get("/catelog/top20cars");
@@ -154,18 +209,21 @@ export const catalogueApi = {
   getCategories(params = {}) {
     return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
       masterType: "aggregate",
+      primary: false,
       ...params,
     }));
   },
   getBrands(params = {}) {
     return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
       masterType: "brand",
+      primary: false,
       ...params,
     }));
   },
   getSubcategories(params = {}) {
     return axiosClient.post("/catelog/partsmart/getMasterList", normalizePayload({
       masterType: "subAggregate",
+      primary: false,
       ...params,
     }));
   },
@@ -201,12 +259,15 @@ export const catalogueApi = {
     }
 
     const cleanKey = String(searchKey).trim();
+    const extraPayload = typeof params === "object" ? normalizePayload(params) : {};
     const payload = {
+      ...extraPayload,
       searchKey: cleanKey,
       customerCode: customerCode || "0046",
     };
 
-    return axiosClient.post("/jobCards/partsmart/generalSearch", payload);
+    return axiosClient.post("/catelog/partsmart/generalSearch", payload)
+      .catch(() => axiosClient.post("/jobCards/partsmart/generalSearch", payload));
   },
   getTieredParts(filters = {}) {
     return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
@@ -219,9 +280,9 @@ export const catalogueApi = {
   },
   getLubesProducts(params = {}) {
     const queryParams = {
-      type: params.type || "LUBRICANTS",
+      type: params.type,
       skip: params.skip !== undefined ? Number(params.skip) : 0,
-      limit: params.limit !== undefined ? Number(params.limit) : 50,
+      limit: params.limit !== undefined ? Number(params.limit) : 10,
     };
     if (params.search && String(params.search).trim() !== "") {
       queryParams.search = String(params.search).trim();
@@ -276,6 +337,37 @@ export const catalogueApi = {
   },
   cancelOrder(enquiryNo, payload) {
     return axiosClient.post(`/catelog/orders/${enquiryNo}/cancel`, payload);
+  },
+
+  // ─── Direct Enquiry Order APIs ─────────────────────────────────────────
+  /**
+   * 1. Place Order (Direct Enquiry Create)
+   * POST /catelog/partsmart/order/direct-enquiry/create
+   * @param {Object} payload { workshopId, customer_code, source, channel, reference_no, vehicle_no, parts }
+   */
+  createDirectEnquiryOrder(payload) {
+    return axiosClient.post("/catelog/partsmart/order/direct-enquiry/create", payload);
+  },
+
+  /**
+   * 2. Order List (Direct Enquiry List)
+   * GET /catelog/partsmart/order/direct-enquiry/list?workshopId=...
+   * @param {string|Object} params - workshopId string or { workshopId }
+   */
+  getDirectEnquiryOrderList(params = {}) {
+    const queryParams = typeof params === "string" ? { workshopId: params } : params;
+    return axiosClient.get("/catelog/partsmart/order/direct-enquiry/list", {
+      params: queryParams,
+    });
+  },
+
+  /**
+   * 3. Order Status (Real-time Enquiry Tracking)
+   * POST /catelog/partsmart/order/direct-enquiry/status
+   * @param {Object} payload { enquiry_no, reference_no, source }
+   */
+  getDirectEnquiryOrderStatus(payload) {
+    return axiosClient.post("/catelog/partsmart/order/direct-enquiry/status", payload);
   },
 };
 

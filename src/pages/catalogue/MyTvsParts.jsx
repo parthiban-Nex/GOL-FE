@@ -8,6 +8,8 @@ import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
 import { showToast } from "@/utils/toast";
 import { catalogueApi } from "@/services/api/catalogueApi";
+import { storage } from "@/utils/storage";
+import { appConfig } from "@/config/appConfig";
 
 export const LUBES_TYPE_TABS = [
   { value: "LUBRICANTS", label: "Engine Oil / Lubricants" },
@@ -66,13 +68,13 @@ function normalizeCartItem(item, productsList = []) {
 
   const ptsEarned = Number(
     item.pointsEarned ||
-      item.points ||
-      item.bronzePoints ||
-      item.loyaltyBasePoints ||
-      item.partConfig?.loyaltyBasePoints ||
-      matchedProduct?.bronzePoints ||
-      matchedProduct?.points ||
-      0
+    item.points ||
+    item.bronzePoints ||
+    item.loyaltyBasePoints ||
+    item.partConfig?.loyaltyBasePoints ||
+    matchedProduct?.bronzePoints ||
+    matchedProduct?.points ||
+    0
   );
 
   return {
@@ -269,13 +271,39 @@ export default function MyTvsParts() {
       });
   };
 
+  const fetchOrders = async () => {
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    try {
+      const res = await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+      const list = res?.data || res?.orders || extractData(res);
+      if (Array.isArray(list)) {
+        setOrders(list);
+      }
+    } catch (err) {
+      console.warn("Error fetching direct enquiry orders:", err);
+    }
+  };
+
   useEffect(() => {
     fetchCart();
-    catalogueApi
-      .getOrders()
-      .then((res) => setOrders(extractData(res)))
-      .catch(() => setOrders([]));
+    fetchOrders();
   }, []);
+
+  // Fetch orders whenever user switches to the orders tab
+  useEffect(() => {
+    if (subTab === "orders") {
+      fetchOrders();
+    }
+  }, [subTab]);
 
   useEffect(() => {
     if (products.length > 0 && cart.length > 0) {
@@ -381,11 +409,11 @@ export default function MyTvsParts() {
           cur.map((c) =>
             c.cartId === cartId || c.code === cartId
               ? {
-                  ...c,
-                  qty:
-                    targetQty ||
-                    (action === "increase" ? c.qty + 1 : Math.max(1, c.qty - 1)),
-                }
+                ...c,
+                qty:
+                  targetQty ||
+                  (action === "increase" ? c.qty + 1 : Math.max(1, c.qty - 1)),
+              }
               : c
           )
         );
@@ -408,32 +436,77 @@ export default function MyTvsParts() {
   }
 
   async function checkout() {
-    if (!cart.length) return;
+    if (!cart.length) {
+      showToast.warning("Your cart is empty. Please add parts first.");
+      return;
+    }
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    const customerCode =
+      (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
+      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
+      loggedInUser?.outlet?.customer_code ||
+      loggedInUser?.outlet?.customerCode ||
+      "NMSA0786";
+
+    const payload = {
+      workshopId: String(workshopId).trim(),
+      customer_code: String(customerCode).trim(),
+      source: "GOL",
+      channel: "B2B-API",
+      reference_no: `REF-GOL-${Date.now()}`,
+      vehicle_no: "",
+      parts: cart.map((item) => ({
+        part_no: String(
+          item.part_number || item.code || item.partNumber || item.cartId || item.id
+        ).trim(),
+        qty: Number(item.qty || item.quantity || 1),
+      })),
+    };
+
     try {
-      await catalogueApi.placeOrder();
-      showToast.success("Order placed successfully!");
+      const response = await catalogueApi.createDirectEnquiryOrder(payload);
+
+      const isSuccess =
+        response?.success === true ||
+        Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
+
+      const enqNo =
+        response?.enquiry_no ||
+        response?.data?.enquiry_no ||
+        response?.enquiryNo;
+
+      if (!isSuccess) {
+        const errorMsg =
+          response?.message ||
+          response?.error?.message ||
+          response?.data?.message ||
+          "Failed to place order";
+        showToast.error(errorMsg);
+        return;
+      }
+
+      showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
       setCart([]);
       setSubTab("orders");
-      catalogueApi
-        .getOrders()
-        .then((res) => setOrders(extractData(res)))
-        .catch(() => {});
+      fetchOrders();
     } catch (err) {
-      console.warn("Backend placeOrder error, optimistic fallback:", err);
-      const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-      setOrders((cur) => [
-        {
-          enquiryNo,
-          customerCode: "NMSA0786",
-          source: "GOL",
-          status: "PROCESSING",
-          orderCreationDate: new Date().toISOString(),
-        },
-        ...cur,
-      ]);
-      setCart([]);
-      showToast.success(`Order ${enquiryNo} placed.`);
-      setSubTab("orders");
+      console.error("Backend createDirectEnquiryOrder error:", err);
+      const errorMsg =
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        "Error placing order";
+      showToast.error(errorMsg);
     }
   }
 
@@ -466,13 +539,13 @@ export default function MyTvsParts() {
       );
       const pts = Number(
         item.pointsEarned ||
-          item.points ||
-          item.bronzePoints ||
-          item.raw?.bronzePoints ||
-          item.raw?.pointsEarned ||
-          matched?.bronzePoints ||
-          matched?.points ||
-          0
+        item.points ||
+        item.bronzePoints ||
+        item.raw?.bronzePoints ||
+        item.raw?.pointsEarned ||
+        matched?.bronzePoints ||
+        matched?.points ||
+        0
       );
       return acc + pts * qty;
     }, 0);
@@ -485,7 +558,7 @@ export default function MyTvsParts() {
   }, [pointsEarned]);
 
   return (
-    <div className="space-y-4 pb-24 text-slate-800">
+    <div className="space-y-4 text-slate-800">
       {/* Header with Title and Top Nav Tabs matching Global & Top 20 Cars */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
         <h1 className="text-lg font-semibold text-slate-900">myTVS Brands</h1>
@@ -785,88 +858,11 @@ export default function MyTvsParts() {
             <CatalogueOrdersTable
               orders={orders}
               onView={(order) => setOpenOrder(order)}
-              onRefresh={() => showToast.success("Orders refreshed")}
+              onRefresh={fetchOrders}
             />
           </div>
         )}
       </div>
-
-      {/* Bottom Cart Summary Bar (hidden when on Cart tab to avoid duplicate cart summary) */}
-      {subTab !== "cart" && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
-          <div className="border-t-2 border-orange-500 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              {/* Left: Cart Totals */}
-              <div className="flex items-center gap-4">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-100 text-orange-600">
-                  <ShoppingCart className="h-5 w-5" />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex items-center gap-6 text-sm font-semibold text-slate-800">
-                    <span>Cart</span>
-                    <span className="text-slate-500">
-                      Total Qty: <strong className="text-slate-900 font-bold">{totalQty} Items</strong>
-                    </span>
-                    <span className="text-slate-500">
-                      Total Amount: <strong className="text-slate-900 font-bold">₹{totalAmount.toLocaleString("en-IN")}</strong>
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-6 text-xs text-slate-500">
-                    <span>
-                      GST (18%): <strong className="text-slate-800 font-semibold">₹{Math.round(gstAmount).toLocaleString("en-IN")}</strong>
-                    </span>
-                    <span>
-                      Grand Total: <strong className="text-orange-600 font-bold text-sm">₹{Math.round(grandTotal).toLocaleString("en-IN")}</strong>
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Middle: Savings & Loyalty Badges */}
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Savings Pill */}
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-                  <Tag className="h-3.5 w-3.5 text-emerald-600" />
-                  <span>₹{Math.round(totalSavings).toLocaleString("en-IN")} Saved!</span>
-                </div>
-
-                {/* Points Pill */}
-                <div className="inline-flex items-center gap-2 rounded-full border border-blue-400 bg-blue-50 px-3.5 py-1 text-xs font-bold text-blue-700">
-                  <Trophy className="h-3.5 w-3.5 text-blue-600" />
-                  <span>+{pointsEarned} Points Earned!</span>
-                  <div className="h-2 w-12 rounded-full bg-blue-200 overflow-hidden">
-                    <div
-                      className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                      style={{ width: `${levelProgress}%` }}
-                    />
-                  </div>
-                  <span className="text-[10px] text-blue-600 font-medium">
-                    {pointsEarned > 0 ? `Level ${Math.floor(pointsEarned / 500) + 1}` : "Level 1"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Right: Actions */}
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => setSubTab("cart")}
-                  className="text-sm font-semibold text-blue-600 underline hover:text-blue-800 cursor-pointer"
-                >
-                  View Details
-                </button>
-                <button
-                  type="button"
-                  onClick={checkout}
-                  className="rounded-lg bg-orange-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-orange-700 active:bg-orange-800 cursor-pointer shadow-md"
-                >
-                  Proceed to Checkout
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Order Details Modal */}
       {openOrder && (
