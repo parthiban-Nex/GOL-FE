@@ -9,7 +9,7 @@ import {
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import { grnApi } from "@/services/api/grnApi";
-
+import grnTemplateUrl from "@/assets/excel/grnupload.xlsx?url";
 const XLSX_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -297,13 +297,13 @@ export default function AddBulkCsvModal({ isOpen, onClose, onSuccess,loadData })
             </span>
           </div>
           <a
-            href={`${import.meta.env.BASE_URL}grnupload.xlsx`}
-            download="grnupload.xlsx"
-            className="inline-flex cursor-pointer items-center gap-1 text-xs font-semibold text-accent-600 hover:text-accent-700"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Download Template
-          </a>
+  href={grnTemplateUrl}
+  download="grnupload.xlsx"
+  className="inline-flex cursor-pointer items-center gap-1 text-xs font-semibold text-accent-600 hover:text-accent-700"
+>
+  <Download className="h-3.5 w-3.5" />
+  Download Template
+</a>
         </div>
       </div>
     </Modal>

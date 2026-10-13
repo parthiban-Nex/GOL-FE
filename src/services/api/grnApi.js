@@ -8,7 +8,10 @@ export const grnApi = {
   },
   /** POST /grn/quickAddGrn — used by the quick-add row for brand-new grns. */
   quickAdd(payload) {
-    return axiosClient.post("/parts/createGrn", payload);
+    return axiosClient.post("/parts/CreateDirectGrn", payload,{  
+        headers: { "Content-Type": "multipart/form-data" },
+}
+);
   },
 
   getVendor(payload) {
