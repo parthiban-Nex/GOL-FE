@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import grnTemplateUrl from "@/assets/excel/grnupload.xlsx?url";
 const XLSX_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";

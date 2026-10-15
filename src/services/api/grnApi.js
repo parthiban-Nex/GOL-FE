@@ -15,7 +15,6 @@ export const grnApi = {
   },
 
   getVendor(payload) {
-    console.log("getVendor payload", payload);
     return axiosClient.post("/vendors/listVendors", payload);
   },
   searchItemDetails(body) {

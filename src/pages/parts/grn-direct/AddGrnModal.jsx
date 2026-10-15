@@ -5,7 +5,7 @@ import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import SingleSelect from "@/components/ui/SingleSelect";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import { GRN_NAME_OPTIONS } from "../mockPartsData";
 import BinLocationModal from "./BinLocationModal";
 

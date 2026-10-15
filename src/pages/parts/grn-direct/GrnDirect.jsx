@@ -22,9 +22,9 @@ import AddGrnModal from "./AddGrnModal";
 import AddBulkCsvModal from "./AddBulkCsvModal";
 import ViewGrnModal from "@/components/parts/ViewGrnModal";
 import GrnDirectFilterModal from "@/components/parts/GrnDirectFilterModal";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import jsPDF from "jspdf";
-import mytvslogo from "../../../assets/images/tvslogo.png"
+import {tvslogo} from "@/assets/images"
 import EditGrnModal from "./EditGrnModal";
 
 const SEARCH_DEBOUNCE_MS = 400;
@@ -349,7 +349,7 @@ const amountInWords = numberToWordsIndian(grndetails.pdf_total+grndetails.friegh
     </p>
     </div>
     <div style="flex:4;display: flex; justify-content: flex-end;margin-top:20px">
-    <img src="${mytvslogo}" style="width: 150px; height: 40px;"/>
+    <img src="${tvslogo}" style="width: 150px; height: 40px;"/>
     </div>
     </div>
     <div style="display:flex;flex-direction:row;line-height:0.5;margin-top:5px">

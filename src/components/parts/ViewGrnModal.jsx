@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 
 const money = (v) =>
   Number(v || 0).toLocaleString("en-IN", {
