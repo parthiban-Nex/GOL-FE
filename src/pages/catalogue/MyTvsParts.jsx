@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import clsx from "clsx";
 import { ShoppingCart, Tag, Trophy, Search, X } from "lucide-react";
 import CatalogueTopNav from "@/components/catalogue/CatalogueTopNav";
@@ -240,10 +240,18 @@ export default function MyTvsParts() {
 
       const list = extractData(res);
       setProducts(list);
-      setTotalCount(res.count ?? res.total ?? list.length);
-      setTotalPages(
-        res.totalPages || Math.ceil((res.count ?? res.total ?? list.length) / pageSize) || 1
-      );
+      const explicitTotal = res?.totalCount ?? res?.total;
+      if (explicitTotal !== undefined && explicitTotal !== null) {
+        setTotalCount(explicitTotal);
+        setTotalPages(Math.ceil(explicitTotal / pageSize) || 1);
+      } else if (page === 1) {
+        const initialTotal = res?.count ?? list.length;
+        setTotalCount(initialTotal);
+        setTotalPages(Math.ceil(initialTotal / pageSize) || 1);
+      } else {
+        setTotalCount((prev) => Math.max(prev, skip + list.length));
+        setTotalPages((prev) => Math.max(prev, Math.ceil((skip + list.length) / pageSize)));
+      }
     } catch (err) {
       console.warn("Failed to fetch Lubes Products:", err);
       setProducts([]);
@@ -271,7 +279,7 @@ export default function MyTvsParts() {
       });
   };
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     const loggedInUser =
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
@@ -291,11 +299,12 @@ export default function MyTvsParts() {
     } catch (err) {
       console.warn("Error fetching direct enquiry orders:", err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchCart();
     fetchOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch orders whenever user switches to the orders tab
@@ -303,7 +312,7 @@ export default function MyTvsParts() {
     if (subTab === "orders") {
       fetchOrders();
     }
-  }, [subTab]);
+  }, [subTab, fetchOrders]);
 
   useEffect(() => {
     if (products.length > 0 && cart.length > 0) {
@@ -435,9 +444,12 @@ export default function MyTvsParts() {
     }
   }
 
-  async function checkout() {
-    if (!cart.length) {
-      showToast.warning("Your cart is empty. Please add parts first.");
+  async function checkout(selectedItems) {
+    const itemsToCheckout =
+      Array.isArray(selectedItems) && selectedItems.length > 0 ? selectedItems : cart;
+
+    if (!itemsToCheckout.length) {
+      showToast.warning("Please select at least one item to proceed to checkout.");
       return;
     }
 
@@ -465,7 +477,7 @@ export default function MyTvsParts() {
       channel: "B2B-API",
       reference_no: `REF-GOL-${Date.now()}`,
       vehicle_no: "",
-      parts: cart.map((item) => ({
+      parts: itemsToCheckout.map((item) => ({
         part_no: String(
           item.part_number || item.code || item.partNumber || item.cartId || item.id
         ).trim(),
@@ -496,7 +508,27 @@ export default function MyTvsParts() {
       }
 
       showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
-      setCart([]);
+
+      // Remove only checked-out items from cart
+      const checkedOutKeys = new Set(
+        itemsToCheckout.map((i) =>
+          String(i.part_number || i.code || i.partNumber || i.cartId || i.id).trim()
+        )
+      );
+
+      setCart((cur) =>
+        cur.filter((c) => {
+          const key = String(c.part_number || c.code || c.partNumber || c.cartId || c.id).trim();
+          return !checkedOutKeys.has(key);
+        })
+      );
+
+      // Also remove from backend cart to stay in sync
+      itemsToCheckout.forEach((item) => {
+        const pNo = item.part_number || item.code || item.partNumber;
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+      });
+
       setSubTab("orders");
       fetchOrders();
     } catch (err) {

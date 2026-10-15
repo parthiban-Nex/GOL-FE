@@ -265,6 +265,10 @@ export const catalogueApi = {
       searchKey: cleanKey,
       customerCode: customerCode || "0046",
     };
+    if (typeof params === "object") {
+      if (params.limit !== undefined) payload.limit = Number(params.limit);
+      if (params.offset !== undefined) payload.offset = Number(params.offset);
+    }
 
     return axiosClient.post("/catelog/partsmart/generalSearch", payload)
       .catch(() => axiosClient.post("/jobCards/partsmart/generalSearch", payload));
@@ -282,7 +286,8 @@ export const catalogueApi = {
     const queryParams = {
       type: params.type,
       skip: params.skip !== undefined ? Number(params.skip) : 0,
-      limit: params.limit !== undefined ? Number(params.limit) : 10,
+      limit: params.limit !== undefined ? Number(params.limit) : 50,
+      _t: Date.now(),
     };
     if (params.search && String(params.search).trim() !== "") {
       queryParams.search = String(params.search).trim();
@@ -368,6 +373,53 @@ export const catalogueApi = {
    */
   getDirectEnquiryOrderStatus(payload) {
     return axiosClient.post("/catelog/partsmart/order/direct-enquiry/status", payload);
+  },
+
+  // ─── Stock Inventory Checking APIs ────────────────────────────────────
+  /**
+   * Check stock for a single part or batch of parts
+   * POST /catelog/partsmart/getStockList
+   * @param {Object} params
+   * @param {string} [params.partNumber] - Part number (e.g., '4673220510')
+   * @param {Array<string>} [params.parts] - Optional array of part numbers for batch checking
+   * @param {string} [params.customerCode] - Optional customer code (defaults to '050')
+   * @param {string} [params.software] - Defaults to 'DMS'
+   */
+  getStockList(params = {}) {
+    const payload = {
+      customerCode: params.customerCode || '050',
+      software: params.software || 'DMS',
+      limit: params.limit || 100,
+      offset: params.offset || 0,
+      sortOrder: params.sortOrder || 'ASC',
+      fieldOrder: params.fieldOrder || 'lotAgeDate',
+      inventoryName: params.inventoryName ?? null,
+      entity: params.entity ?? null,
+    };
+
+    // If batch check (array of parts)
+    if (Array.isArray(params.parts) && params.parts.length > 0) {
+      payload.parts = params.parts;
+    } else {
+      payload.partNumber = String(
+        params.partNumber || params.part_number || params.code || params.partNo || ''
+      ).trim();
+    }
+
+    return axiosClient.post('/catelog/partsmart/getStockList', payload);
+  },
+
+  /**
+   * Check stock for all items currently in cart
+   * @param {Array<string|Object>} cartItems - Array of cart items or part numbers
+   * @param {string} [customerCode]
+   */
+  checkCartStock(cartItems = [], customerCode = '050') {
+    const parts = cartItems
+      .map((item) => (typeof item === 'string' ? item : item.part_number || item.partNumber || item.code))
+      .filter(Boolean);
+
+    return catalogueApi.getStockList({ parts, customerCode });
   },
 };
 

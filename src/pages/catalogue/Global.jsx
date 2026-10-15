@@ -294,7 +294,7 @@ function normalizePartItem(item, idx) {
     mrp: mrpVal,
     mrpIncl: Math.round(mrpVal),
     saleRate: saleVal,
-    priceIncl: Math.round(saleVal * (1 + taxVal / 100)),
+    priceIncl: Math.round(saleVal),
     taxpercent: taxVal,
     discPct,
     points: item.partConfig?.loyaltyBasePoints || item.points || 0,
@@ -308,7 +308,7 @@ function normalizeCartItem(item) {
   if (!item || typeof item !== "object") return null;
   const partNo = item.partNumber || item.part_number || item.code || item.cartId || item.id;
   const desc = item.itemDescription || item.part_desc || item.name || partNo;
-  const brand = item.brandName || item.product_brand || item.brand || "MAHINDRA";
+  const brand = item.brandName || item.product_brand || item.brand ;
   const qty = Number(item.quantity ?? item.qty ?? 1);
   const mrp = Number(item.mrp ?? item.part_mrp ?? item.listPrice ?? 0);
   const listPrice = Number(item.listPrice ?? item.list_price ?? item.billingPrice ?? item.saleRate ?? mrp);
@@ -463,9 +463,7 @@ export default function Global() {
   }, []);
 
 
-  const fetchOrders = async () => {
-    console.log("[Direct Enquiry] fetchOrders() called");
-
+  const fetchOrders = useCallback(async () => {
     const loggedInUser =
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
@@ -477,44 +475,26 @@ export default function Global() {
       loggedInUser?.customer_account_id ||
       "";
 
-    console.log("[Direct Enquiry] User:", loggedInUser);
-    console.log("[Direct Enquiry] workshopId:", workshopId);
-
     try {
-      console.log("[Direct Enquiry] Sending GET request...");
-
       const res =
         await catalogueApi.getDirectEnquiryOrderList({ workshopId });
-
-      console.log("[Direct Enquiry] Response status:", res.status);
-      console.log("[Direct Enquiry] Response data:", res.data);
 
       const list = res?.data || res?.orders || extractData(res);
 
       if (Array.isArray(list)) {
-        console.log("[Direct Enquiry] Orders count:", list.length);
         setOrders(list);
-      } else {
-        console.warn("[Direct Enquiry] Unexpected response format:", list);
       }
     } catch (err) {
-      console.error("[Direct Enquiry] Request failed:", {
-        message: err.message,
-        status: err.response?.status,
-        responseData: err.response?.data,
-        url: err.config?.url,
-        method: err.config?.method,
-      });
+      console.warn("Failed to load direct enquiry orders:", err.message);
     }
-  };
-
+  }, []);
 
   // Fetch orders whenever user switches to the orders tab
   useEffect(() => {
     if (tab === "orders") {
       fetchOrders();
     }
-  }, [tab]);
+  }, [tab, fetchOrders]);
 
   // Reset page to 1 when filters change
   useEffect(() => {
@@ -535,7 +515,7 @@ export default function Global() {
     partQuery,
   ]);
 
-  // 1. Fetch Makes, Brands, Cart & Orders on mount (customerCode 0046)
+  // 1. Fetch Makes, Brands, Cart & Orders on mount (customerCode 0046) - run only once
   useEffect(() => {
     catalogueApi
       .getMakes({ customerCode: CUSTOMER_CODE })
@@ -549,7 +529,8 @@ export default function Global() {
 
     fetchCart();
     fetchOrders();
-  }, [fetchCart, fetchOrders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 1b. Fetch Categories when Selected Brands, Makes, or Models change
   useEffect(() => {
@@ -776,6 +757,8 @@ export default function Global() {
       ? catalogueApi.generalSearch({
         customerCode: CUSTOMER_CODE,
         searchKey: cleanQuery,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       })
       : catalogueApi.getPartsList(basePayload);
 
@@ -800,7 +783,14 @@ export default function Global() {
       .then((res) => {
         if (cancelled) return;
         const raw = extractData(res);
-        setTotalPartsCount(res?.count ?? res?.totalCount ?? res?.total ?? raw.length);
+        const explicitTotal = res?.totalCount ?? res?.total;
+        if (explicitTotal !== undefined && explicitTotal !== null) {
+          setTotalPartsCount(explicitTotal);
+        } else if (page === 1) {
+          setTotalPartsCount(res?.count ?? raw.length);
+        } else {
+          setTotalPartsCount((prev) => Math.max(prev, (page - 1) * pageSize + raw.length));
+        }
         setPartsList(raw.map(normalizePartItem).filter(Boolean));
       })
       .catch(() => {
@@ -956,20 +946,16 @@ export default function Global() {
     const brandKeys = selectedBrands.length
       ? new Set(selectedBrands.map((b) => up(String(b).trim())))
       : null;
-    const catKeys = !partQuery && selectedCats.length ? new Set(selectedCats.map(normKey)) : null;
-    const subKeys = !partQuery && selectedSubs.length ? new Set(selectedSubs.map(normKey)) : null;
 
     const list = partsList.filter((p) => {
       if (!p) return false;
       if (brandKeys && !brandKeys.has(up((p.brandName || p.brand || "").trim()))) return false;
-      if (catKeys && !catKeys.has(normKey((p.aggregate || p.category || "").trim()))) return false;
-      if (subKeys && !subKeys.has(normKey((p.subAggregate || p.subcategory || "").trim()))) return false;
       return true;
     });
 
     const sorter = SORTERS[sort];
     return sorter ? [...list].sort(sorter) : list;
-  }, [partsList, selectedCats, selectedSubs, selectedBrands, partQuery, sort]);
+  }, [partsList, selectedBrands, sort]);
 
   // Aggregate → sub-aggregate two-level grouping for the results panel.
   const grouped = useMemo(() => {
@@ -1153,9 +1139,12 @@ export default function Global() {
     [fetchCart],
   );
 
-  async function checkout() {
-    if (!cart.length) {
-      showToast.warning("Your cart is empty. Please add parts first.");
+  async function checkout(selectedItems) {
+    const itemsToCheckout =
+      Array.isArray(selectedItems) && selectedItems.length > 0 ? selectedItems : cart;
+
+    if (!itemsToCheckout.length) {
+      showToast.warning("Please select at least one item to proceed to checkout.");
       return;
     }
 
@@ -1186,7 +1175,7 @@ export default function Global() {
         mode === "vehicle" && vahanData?.registrationNumber
           ? vahanData.registrationNumber
           : "",
-      parts: cart.map((item) => ({
+      parts: itemsToCheckout.map((item) => ({
         part_no: String(
           item.part_number || item.code || item.partNumber || item.cartId || item.id
         ).trim(),
@@ -1217,7 +1206,27 @@ export default function Global() {
       }
 
       showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
-      setCart([]);
+
+      // Remove only checked-out items from cart
+      const checkedOutKeys = new Set(
+        itemsToCheckout.map((i) =>
+          String(i.part_number || i.code || i.partNumber || i.cartId || i.id).trim()
+        )
+      );
+
+      setCart((cur) =>
+        cur.filter((c) => {
+          const key = String(c.part_number || c.code || c.partNumber || c.cartId || c.id).trim();
+          return !checkedOutKeys.has(key);
+        })
+      );
+
+      // Also remove from backend cart to stay in sync
+      itemsToCheckout.forEach((item) => {
+        const pNo = item.part_number || item.code || item.partNumber;
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+      });
+
       setTab("orders");
       fetchOrders();
     } catch (err) {

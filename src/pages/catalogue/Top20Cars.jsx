@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import clsx from "clsx";
 import { Check, Pencil, X, Car } from "lucide-react";
 import * as Icons from "lucide-react";
@@ -249,7 +249,11 @@ function groupPartsByComponent(data) {
       code: rawPartNumber,
       partNumber: rawPartNumber,
       displayPartNo: displayPartNo || rawPartNumber,
-      brand: item.brandName || item.brand || "-",
+      brand:
+        item.brandName ||
+        item.brand ||
+        item.oemPartBrand ||
+        (tierKey === "oem" ? (item.make || "OEM") : "-"),
       mrp: mrpVal,
       saleRate: saleRateVal,
       discountPercent: discountPct,
@@ -363,6 +367,14 @@ export default function Top20Cars() {
   const [selectedBrands, setSelectedBrands] = useState([]);
   const [selectedColumns, setSelectedColumns] = useState([]);
   const [partQuery, setPartQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(partQuery.trim());
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [partQuery]);
 
   const [cart, setCart] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -382,7 +394,7 @@ export default function Top20Cars() {
       });
   };
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     const loggedInUser =
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
@@ -402,7 +414,7 @@ export default function Top20Cars() {
     } catch (err) {
       console.warn("Error fetching direct enquiry orders:", err);
     }
-  };
+  }, []);
 
   // 1. Fetch Makes, Top 20 Cars, Cart & Orders on mount
   useEffect(() => {
@@ -423,6 +435,7 @@ export default function Top20Cars() {
 
     fetchCart();
     fetchOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch orders whenever user switches to the orders tab
@@ -430,7 +443,7 @@ export default function Top20Cars() {
     if (tab === "orders") {
       fetchOrders();
     }
-  }, [tab]);
+  }, [tab, fetchOrders]);
 
   // 2. Fetch Models when Makes change
   useEffect(() => {
@@ -577,18 +590,23 @@ export default function Top20Cars() {
       return;
     }
     setIsLoadingParts(true);
+    const payload = {
+      customerCode: CUSTOMER_CODE,
+      make: makes,
+      model: models,
+      vehicleGeneration: generation,
+      variant: variants,
+      fuelType: fuels,
+      year: years,
+      aggregate: categories,
+      subAggregate: subcategories,
+    };
+    if (debouncedQuery) {
+      payload.partNumber = debouncedQuery;
+      payload.searchKey = debouncedQuery;
+    }
     catalogueApi
-      .getPartsList({
-        customerCode: CUSTOMER_CODE,
-        make: makes,
-        model: models,
-        vehicleGeneration: generation,
-        variant: variants,
-        fuelType: fuels,
-        year: years,
-        aggregate: categories,
-        subAggregate: subcategories,
-      })
+      .getPartsList(payload)
       .then((res) => setPartsList(groupPartsByComponent(extractData(res))))
       .catch(() => setPartsList([]))
       .finally(() => setIsLoadingParts(false));
@@ -601,6 +619,7 @@ export default function Top20Cars() {
     years,
     categories,
     subcategories,
+    debouncedQuery,
   ]);
 
   function handleMakesChange(next) {
@@ -876,9 +895,12 @@ export default function Top20Cars() {
     }
   }
 
-  async function checkout() {
-    if (!cart.length) {
-      showToast.warning("Your cart is empty. Please add parts first.");
+  async function checkout(selectedItems) {
+    const itemsToCheckout =
+      Array.isArray(selectedItems) && selectedItems.length > 0 ? selectedItems : cart;
+
+    if (!itemsToCheckout.length) {
+      showToast.warning("Please select at least one item to proceed to checkout.");
       return;
     }
 
@@ -906,7 +928,7 @@ export default function Top20Cars() {
       channel: "B2B-API",
       reference_no: `REF-GOL-${Date.now()}`,
       vehicle_no: "",
-      parts: cart.map((item) => ({
+      parts: itemsToCheckout.map((item) => ({
         part_no: String(
           item.part_number || item.code || item.partNumber || item.cartId || item.id
         ).trim(),
@@ -937,7 +959,27 @@ export default function Top20Cars() {
       }
 
       showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
-      setCart([]);
+
+      // Remove only checked-out items from cart
+      const checkedOutKeys = new Set(
+        itemsToCheckout.map((i) =>
+          String(i.part_number || i.code || i.partNumber || i.cartId || i.id).trim()
+        )
+      );
+
+      setCart((cur) =>
+        cur.filter((c) => {
+          const key = String(c.part_number || c.code || c.partNumber || c.cartId || c.id).trim();
+          return !checkedOutKeys.has(key);
+        })
+      );
+
+      // Also remove from backend cart to stay in sync
+      itemsToCheckout.forEach((item) => {
+        const pNo = item.part_number || item.code || item.partNumber;
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+      });
+
       setTab("orders");
       fetchOrders();
     } catch (err) {
@@ -1227,6 +1269,18 @@ function SelectionPhase({
                         {g.label.split(" (")[0]}
                       </p>
                     </button>
+                    {g.url && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPreviewGen(g);
+                        }}
+                        className="mt-1 block mx-auto text-[10px] text-ink-400 hover:text-ink-600 underline cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                    )}
                   </div>
                 );
               })
@@ -1477,7 +1531,7 @@ const COL_WIDTH = {
 
 function tierColumnKeys(tierKey, extraColumns) {
   const keys = ["partNo"];
-  if (tierKey !== "oem" && extraColumns.includes("brand")) keys.push("brand");
+  if (extraColumns.includes("brand")) keys.push("brand");
   keys.push("mrp", "saleRate", "qty");
   if (extraColumns.includes("warranty")) keys.push("warranty");
   if (extraColumns.includes("coins")) keys.push("coins");
@@ -1673,12 +1727,28 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
                 </span>
               </td>
             );
-          case "brand":
+          case "brand": {
+            const brandName =
+              tier.brand && tier.brand !== "-"
+                ? tier.brand
+                : tierKey === "oem"
+                  ? (tier.raw?.make || "OEM")
+                  : "—";
+
             return (
-              <td key={k} className={clsx(cellCls, "text-xs text-ink-600")}>
-                {tier.brand}
+              <td
+                key={k}
+                className={clsx(
+                  cellCls,
+                  "text-xs text-ink-600 whitespace-normal break-words" // <-- replaces nowrap
+                )}
+                title={brandName} // <-- Tooltip showing full name on mouse hover
+              >
+                {brandName}
               </td>
             );
+          }
+
           case "mrp":
             return (
               <td key={k} className={clsx(cellCls, "text-center text-ink-700")}>
@@ -1842,7 +1912,11 @@ function TierTable({
                     </td>
                     {showBrand && (
                       <td className="px-3 py-4 text-xs text-ink-600">
-                        {tier.brand}
+                        {tier.brand && tier.brand !== "-"
+                          ? tier.brand
+                          : tierKey === "oem"
+                            ? (tier.raw?.make || "OEM")
+                            : "—"}
                       </td>
                     )}
                     <td className="px-3 py-4 text-center text-ink-700">
