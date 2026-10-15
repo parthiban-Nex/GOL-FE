@@ -3,7 +3,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import BinLocationModal from "./BinLocationModal";
 // Shared with AddGrnModal (all four are exported from there).
 import {

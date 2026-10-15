@@ -4,7 +4,7 @@ import { Autocomplete, TextField, CircularProgress } from "@mui/material";
 import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import { showToast } from "@/utils/toast";
 
 const MIN_CHARS = 3;

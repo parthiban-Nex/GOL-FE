@@ -5,7 +5,7 @@ import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import SingleSelect from "@/components/ui/SingleSelect";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import { GRN_NAME_OPTIONS } from "../mockPartsData";
 import BinLocationModal from "./BinLocationModal";
 
@@ -175,7 +175,7 @@ export default function AddGrnModal({
   const [selectedVendor, setSelectedVendor] = useState(null);
   const [vendorInput, setVendorInput] = useState("");
   const [isVendorLoading, setIsVendorLoading] = useState(false);
-
+  const [invoicePdf, setInvoicePdf] = useState(null);
   // Reset everything when the modal opens.
   useEffect(() => {
     if (isOpen) {
@@ -186,6 +186,8 @@ export default function AddGrnModal({
       setVendorOptions([]);
       setSelectedVendor(null);
       setVendorInput("");
+      setInvoicePdf(null); // <-- new
+
     }
   }, [isOpen]);
 
@@ -364,6 +366,7 @@ export default function AddGrnModal({
       vendorId: selectedVendor.id,
       vendorCode: selectedVendor.vendorCode,
       vendorState: selectedVendor.state,
+      invoicePdf,
       // First bin feeds the single binId / binLocation fields on the grn part;
       // the full split stays in `bins` for bindata.
       items: items.map((it) => ({
@@ -545,6 +548,29 @@ export default function AddGrnModal({
               }
               placeholder="0.00"
             />
+            <div>
+  <label className="mb-1 block text-xs font-medium text-ink-600">
+    Supplier Invoice PDF <span className="text-danger-500">*</span>
+  </label>
+  <input
+    type="file"
+    accept="application/pdf,image/*"
+    onChange={(e) => {
+      console.log(e.target.files,"checkk")
+      setInvoicePdf(e.target.files?.[0] ?? null);
+      if (errors.invoicePdf) {
+        setErrors((prev) => ({ ...prev, invoicePdf: null }));
+      }
+    }}
+    className="block w-full cursor-pointer border-b border-ink-200 pb-1 text-xs text-ink-700 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-brand-50 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-brand-700 hover:file:bg-brand-100"
+  />
+  {invoicePdf && (
+    <p className="mt-1 truncate text-xs text-ink-500">{invoicePdf.name}</p>
+  )}
+  {errors.invoicePdf && (
+    <p className="mt-1 text-xs text-danger-500">{errors.invoicePdf}</p>
+  )}
+</div>
           </div>
 
           {/* Parts Line Items - a free-form editable grid, which the

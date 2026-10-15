@@ -23,3 +23,4 @@ export { default as labourValues } from "./labour-values.webp";
 export { default as partsAvailability } from "./parts-availability.webp";
 export { default as partsOrders } from "./parts-orders.webp";
 export { default as partsValues } from "./parts-values.webp";
+export { default as tvslogo } from "./tvslogo.png";
