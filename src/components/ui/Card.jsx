@@ -6,7 +6,7 @@ export default function Card({ className, children, padded = true, ...props }) {
     <div
       className={clsx(
         "rounded-xl border border-ink-100 bg-white shadow-card",
-        padded && "p-5",
+        padded && "p-3.5 sm:p-5",
         className
       )}
       {...props}

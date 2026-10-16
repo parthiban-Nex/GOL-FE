@@ -284,6 +284,10 @@ export default function MyTvsParts() {
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
     const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||
@@ -457,6 +461,10 @@ export default function MyTvsParts() {
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
     const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||

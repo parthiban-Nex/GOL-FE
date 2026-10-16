@@ -399,6 +399,10 @@ export default function Top20Cars() {
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
     const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||
@@ -908,6 +912,10 @@ export default function Top20Cars() {
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
     const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||
@@ -1558,7 +1566,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
     );
 
   return (
-    <div className="scrollbar-hide overflow-x-auto rounded-xl border border-ink-100">
+    <div className="overflow-x-auto rounded-xl border border-ink-200 shadow-xs">
       <table
         className="border-collapse text-sm"
         style={{ tableLayout: "fixed", width: totalWidth, minWidth: "100%" }}
@@ -1575,7 +1583,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
           <tr>
             <th
               rowSpan={2}
-              className="border-r border-ink-100 bg-white px-4 py-3 text-left text-xs font-medium text-ink-500 align-middle"
+              className="sticky left-0 z-20 border-r border-ink-200 bg-white px-4 py-3 text-left text-xs font-semibold text-ink-600 align-middle shadow-[2px_0_4px_rgba(0,0,0,0.04)]"
             >
               Components
             </th>
@@ -1615,7 +1623,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.rowId} className="border-t border-ink-100 align-top">
-              <td className="border-r border-ink-100 bg-white px-4 py-4 text-sm font-semibold uppercase text-ink-800 truncate">
+              <td className="sticky left-0 z-10 border-r border-ink-200 bg-white px-4 py-4 text-sm font-semibold uppercase text-ink-800 truncate shadow-[2px_0_4px_rgba(0,0,0,0.04)]">
                 {row.components}
               </td>
               {tiers.map((tierKey, i) => {

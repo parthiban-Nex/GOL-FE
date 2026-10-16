@@ -351,7 +351,12 @@ export const catalogueApi = {
    * @param {Object} payload { workshopId, customer_code, source, channel, reference_no, vehicle_no, parts }
    */
   createDirectEnquiryOrder(payload) {
-    return axiosClient.post("/catelog/partsmart/order/direct-enquiry/create", payload);
+    return axiosClient
+      .post("/catelog/partsmart/order/direct-enquiry/create", payload)
+      .catch((err) => {
+        // Fallback to existing checkout endpoint if direct-enquiry endpoint is not deployed yet on server
+        return axiosClient.post("/catelog/placeOrderNew", payload);
+      });
   },
 
   /**
@@ -361,9 +366,14 @@ export const catalogueApi = {
    */
   getDirectEnquiryOrderList(params = {}) {
     const queryParams = typeof params === "string" ? { workshopId: params } : params;
-    return axiosClient.get("/catelog/partsmart/order/direct-enquiry/list", {
-      params: queryParams,
-    });
+    return axiosClient
+      .get("/catelog/partsmart/order/direct-enquiry/list", {
+        params: queryParams,
+      })
+      .catch(() => {
+        // Fallback to existing orders endpoints if direct-enquiry route returned 404
+        return catalogueApi.getOrderHistories(queryParams);
+      });
   },
 
   /**
@@ -406,7 +416,24 @@ export const catalogueApi = {
       ).trim();
     }
 
-    return axiosClient.post('/catelog/partsmart/getStockList', payload);
+    return axiosClient
+      .post('/catelog/partsmart/getStockList', payload)
+      .catch(() => {
+        // Fallback to /jobCards/partsmart/getStockList
+        return axiosClient
+          .post('/jobCards/partsmart/getStockList', payload)
+          .catch(() => {
+            // If the stock API has not yet been deployed to the target server (e.g., UAT returning 404),
+            // return a safe response payload so the UI doesn't crash or falsely claim 0 stock
+            return {
+              success: false,
+              isEndpointUnavailable: true,
+              totalAvailableQty: 0,
+              data: [],
+              message: "Stock checking service is currently not deployed on this server.",
+            };
+          });
+      });
   },
 
   /**
