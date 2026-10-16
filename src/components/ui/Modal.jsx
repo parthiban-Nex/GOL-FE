@@ -81,8 +81,17 @@ export function ConfirmModal({
   onConfirm,
   title,
   description,
+  message,
+  children,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  tone = "danger",
+  confirmVariant,
   isLoading,
 }) {
+  const content = description ?? message ?? children;
+  const buttonVariant = confirmVariant || (tone === "danger" ? "danger" : "primary");
+
   return (
     <Modal
       isOpen={isOpen}
@@ -91,16 +100,20 @@ export function ConfirmModal({
       size="sm"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
+          <Button variant="secondary" onClick={onClose} disabled={isLoading}>
+            {cancelLabel}
           </Button>
-          <Button variant="danger" onClick={onConfirm} isLoading={isLoading}>
-            Confirm
+          <Button variant={buttonVariant} onClick={onConfirm} isLoading={isLoading}>
+            {confirmLabel}
           </Button>
         </>
       }
     >
-      <p className="text-sm text-ink-600">{description}</p>
+      {typeof content === "string" ? (
+        <p className="text-sm text-ink-600 leading-relaxed">{content}</p>
+      ) : (
+        content
+      )}
     </Modal>
   );
 }

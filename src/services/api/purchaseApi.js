@@ -1,47 +1,66 @@
 import { axiosClient } from "@/services";
 
-/**
- * Backend-ready Purchase endpoints for Finance > Purchase. Until the
- * backend exists, pages/finance/Purchase.jsx reads from local mock
- * data.
- */
 export const purchaseApi = {
-  listPurchases(params) {
-    // TODO: return axiosClient.get("/finance/purchases", { params });
-    return Promise.reject(
-      new Error("purchaseApi.listPurchases() not connected"),
-    );
+  // ─── Purchases (main list) ──────────────────────────────────────────
+  listPurchases(body = {}) {
+    return axiosClient.post("/financePurchase/listPurchases", body);
   },
   getPurchase(id) {
-    // TODO: return axiosClient.get(`/finance/purchases/${id}`);
-    return Promise.reject(new Error("purchaseApi.getPurchase() not connected"));
+    return axiosClient.post("/financePurchase/getPurchase", { id });
   },
   createPurchase(payload) {
-    // TODO: return axiosClient.post("/finance/purchases", payload);
-    return Promise.reject(
-      new Error("purchaseApi.createPurchase() not connected"),
-    );
+    if (payload instanceof FormData) {
+      return axiosClient.post("/financePurchase/createPurchase", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/financePurchase/createPurchase", payload);
   },
-  updatePurchase(id, payload) {
-    // TODO: return axiosClient.put(`/finance/purchases/${id}`, payload);
-    return Promise.reject(
-      new Error("purchaseApi.updatePurchase() not connected"),
-    );
+  updatePurchase(idOrPayload, maybePayload) {
+    let payload = idOrPayload;
+    if (maybePayload !== undefined) {
+      if (maybePayload instanceof FormData) {
+        maybePayload.set("id", idOrPayload);
+        payload = maybePayload;
+      } else {
+        payload = { ...maybePayload, id: idOrPayload };
+      }
+    }
+    if (payload instanceof FormData) {
+      return axiosClient.post("/financePurchase/editPurchase", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/financePurchase/editPurchase", payload);
   },
-  removePurchase(id) {
-    // TODO: return axiosClient.delete(`/finance/purchases/${id}`);
-    return Promise.reject(
-      new Error("purchaseApi.removePurchase() not connected"),
-    );
+  addPayment(payload) {
+    return axiosClient.post("/financePurchase/addPayment", payload);
+  },
+  getPurchasePayments(purchaseId) {
+    return axiosClient.post("/financePurchase/getPurchasePayments", { purchaseId });
   },
   uploadPurchaseDocument(id, file) {
-    // TODO: return axiosClient.postForm(`/finance/purchases/${id}/documents`, { file });
-    return Promise.reject(
-      new Error("purchaseApi.uploadPurchaseDocument() not connected"),
-    );
+    const formData = new FormData();
+    formData.append("id", id);
+    formData.append("document", file);
+    return axiosClient.post("/financePurchase/uploadPurchaseDocument", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
   },
-  exportCsv(params) {
-    // TODO: return axiosClient.get("/finance/purchases/export", { params, responseType: "blob" });
-    return Promise.reject(new Error("purchaseApi.exportCsv() not connected"));
+  exportCsv(params = {}) {
+    return axiosClient.post("/financePurchase/listPurchases", params);
+  },
+
+  // ─── Finance Purchase Vendors ───────────────────────────────────────
+  listVendors(body = {}) {
+    return axiosClient.post("/financePurchaseVendor/listFinancePurchaseVendors", body);
+  },
+  createVendor(payload) {
+    if (payload instanceof FormData) {
+      return axiosClient.post("/financePurchaseVendor/createFinancePurchaseVendor", payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+    }
+    return axiosClient.post("/financePurchaseVendor/createFinancePurchaseVendor", payload);
   },
 };

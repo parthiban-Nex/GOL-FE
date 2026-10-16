@@ -34,8 +34,9 @@ export const PAYMENT_MODE_OPTIONS = [
 ];
 
 export const EXPENSE_STATUS_OPTIONS = [
-  { value: "Paid",    label: "Paid" },
-  { value: "Pending", label: "Pending" },
+  { value: "Paid",           label: "Paid" },
+  { value: "Partially Paid", label: "Partially Paid" },
+  { value: "Pending",        label: "Pending" },
 ];
 
 export const VENDOR_TYPE_OPTIONS = [
