@@ -24,20 +24,42 @@ export default function MultiSelect({
   required,
   sx,
 }) {
-  const selectedOptions = options.filter((o) => value.includes(o.value));
+  const effectiveOptions = [...(options || [])];
+  if (Array.isArray(value)) {
+    value.forEach((val) => {
+      if (
+        val !== null &&
+        val !== undefined &&
+        val !== "" &&
+        !effectiveOptions.some(
+          (o) => String(o.value).toUpperCase() === String(val).toUpperCase(),
+        )
+      ) {
+        effectiveOptions.push({ value: String(val), label: String(val) });
+      }
+    });
+  }
+
+  const selectedOptions = effectiveOptions.filter((o) =>
+    (value || []).some(
+      (v) => String(v).toUpperCase() === String(o.value).toUpperCase(),
+    ),
+  );
   const allSelected =
-    withSelectAll && options.length > 0 && value.length === options.length;
+    withSelectAll &&
+    effectiveOptions.length > 0 &&
+    (value || []).length === effectiveOptions.length;
 
   const listOptions =
-    withSelectAll && options.length > 0
+    withSelectAll && effectiveOptions.length > 0
       ? [
           {
             value: SELECT_ALL_VALUE,
             label: selectAllLabel ?? `All ${label ?? ""}`,
           },
-          ...options,
+          ...effectiveOptions,
         ]
-      : options;
+      : effectiveOptions;
 
   return (
     <Autocomplete

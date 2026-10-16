@@ -33,10 +33,21 @@ axiosClient.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const status = error.response?.status;
-    const serverMessage = error.response?.data?.message;
+    const serverMessage =
+      error.response?.data?.error?.message ||
+      error.response?.data?.message;
 
     if (status === 401) {
-      unauthorizedHandler?.();
+      // Do NOT invalidate user session if 401 comes from upstream catalog / external ERP services
+      const isUpstreamCatalog =
+        error.config?.url?.includes("/catelog/") ||
+        error.config?.url?.includes("/jobCards/partsmart") ||
+        error.response?.data?.error?.code === "INVALID_TOKEN" ||
+        error.response?.data?.code === "INVALID_TOKEN";
+
+      if (!isUpstreamCatalog) {
+        unauthorizedHandler?.();
+      }
     }
 
     const safeMessage =

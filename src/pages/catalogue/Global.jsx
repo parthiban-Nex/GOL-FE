@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   Search,
@@ -7,30 +7,9 @@ import {
   ChevronRight,
   X,
   Check,
-  // Category icons - named imports so only these are bundled
-  // (import * as Icons pulled in the whole ~740 KB icon library).
-  Filter as FilterIcon,
-  Disc as DiscIcon,
-  Settings as SettingsIcon,
-  MoveVertical as MoveVerticalIcon,
-  Lightbulb as LightbulbIcon,
-  CircleDot as CircleDotIcon,
-  BatteryCharging as BatteryChargingIcon,
-  Minus as MinusIcon,
-  Sparkles as SparklesIcon,
-  Settings2 as Settings2Icon,
-  Car as CarIcon,
-  Wrench as WrenchIcon,
-  Cable as CableIcon,
-  Boxes as BoxesIcon,
-  CircleGauge as CircleGaugeIcon,
-  Zap as ZapIcon,
-  Droplet as DropletIcon,
-  Fuel as FuelIcon,
-  Square as SquareIcon,
-  Megaphone as MegaphoneIcon,
-  PackageOpen as PackageOpenIcon,
+  Car,
 } from "lucide-react";
+import * as Icons from "lucide-react";
 import MultiSelect from "@/components/ui/Multiselect";
 import Input from "@/components/ui/Input";
 import Card from "@/components/ui/Card";
@@ -41,209 +20,820 @@ import CatalogueCartTable from "@/components/catalogue/CatalogueCartTable";
 import CatalogueOrdersTable from "@/components/catalogue/CatalogueOrdersTable";
 import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
-import {
-  MAKE_OPTIONS,
-  MODEL_OPTIONS_BY_MAKE,
-  VARIANT_OPTIONS,
-  FUEL_OPTIONS,
-  YEAR_OPTIONS,
-  GENERATIONS,
-  CATEGORY_OPTIONS,
-  SUBCATEGORY_MAP,
-  FLAT_PARTS,
-  INITIAL_CART_ITEMS,
-  INITIAL_ORDERS,
-  ORDER_DETAILS_BY_ENQUIRY,
-} from "@/pages/catalogue/mockCatalogue";
 import { showToast } from "@/utils/toast";
+import { catalogueApi } from "@/services/api/catalogueApi";
+import { storage } from "@/utils/storage";
+import { appConfig } from "@/config/appConfig";
+import Pagination from "@/components/ui/Pagination";
+
+const CUSTOMER_CODE = "0046";
+
+/* ─── tiny shared helpers ─── */
+
+const up = (v) => String(v ?? "").toUpperCase();
+const sameCI = (a, b) => up(a) === up(b);
+const underscoreToSpace = (v) => String(v ?? "").replace(/_/g, " ");
+const normKey = (v) => up(underscoreToSpace(v));
+const matchesCartId = (c, id) => sameCI(c.cartId, id) || sameCI(c.code, id);
+const toggleInArray = (arr, value) =>
+  arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value];
+
+const SORT_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "price-asc", label: "Price: Low to High" },
+  { value: "price-desc", label: "Price: High to Low" },
+  { value: "disc-desc", label: "Discount: High to Low" },
+];
+
+const price = (p) => p.saleRate || p.mrp || 0;
+const SORTERS = {
+  "price-asc": (a, b) => price(a) - price(b),
+  "price-desc": (a, b) => price(b) - price(a),
+  "disc-desc": (a, b) => (b.discPct || 0) - (a.discPct || 0),
+};
+
+/* ─── response normalisers ─── */
+
+function extractData(res) {
+  if (!res) return [];
+  if (Array.isArray(res)) return res;
+  if (Array.isArray(res.cart?.selected)) return res.cart.selected;
+  if (Array.isArray(res.cart?.items)) return res.cart.items;
+  if (Array.isArray(res.cart?.parts)) return res.cart.parts;
+  if (Array.isArray(res.cart)) return res.cart;
+  if (Array.isArray(res.data)) return res.data;
+  if (Array.isArray(res.result)) return res.result;
+  if (Array.isArray(res.items)) return res.items;
+  if (Array.isArray(res.list)) return res.list;
+  if (Array.isArray(res.masterList)) return res.masterList;
+  if (typeof res === "object") {
+    if (res.cart && typeof res.cart === "object") {
+      for (const key of Object.keys(res.cart)) {
+        if (Array.isArray(res.cart[key])) return res.cart[key];
+      }
+    }
+    for (const key of Object.keys(res)) {
+      if (Array.isArray(res[key])) return res[key];
+    }
+  }
+  return [];
+}
+
+const trimStr = (v) => (v ? String(v).trim() : "");
+
+function extractVehicleData(res) {
+  if (!res) return null;
+  const root = res.data ?? res.result ?? res;
+  const target = Array.isArray(root) ? root[0] || {} : root;
+
+  const mytvs = target.mytvsDetails || target.mytvs || {};
+  const user = target.userDetails || target.user || {};
+  const vahan = target.vahanDetails || target.vahan || target.result || target;
+
+  const make =
+    user.userMake ||
+    mytvs.mytvsMake ||
+    target.make ||
+    target.manufacturer ||
+    vahan.make ||
+    vahan.manufacturer ||
+    "";
+
+  const model =
+    user.userModel ||
+    mytvs.mytvsModel ||
+    target.model ||
+    target.manufacturerModel ||
+    target.manufacturer_model ||
+    vahan.model ||
+    vahan.manufacturerModel ||
+    vahan.manufacturer_model ||
+    "";
+
+  const variant =
+    user.userVariant ||
+    mytvs.mytvsVariant ||
+    target.variant ||
+    vahan.variant ||
+    "";
+
+  const fuelType =
+    user.userFuelType ||
+    mytvs.mytvsFuelType ||
+    target.fuelType ||
+    target.fuel_type ||
+    vahan.fuelType ||
+    vahan.fuel_type ||
+    "";
+
+  const year =
+    user.userYear ||
+    mytvs.mytvsYear ||
+    target.year ||
+    vahan.yearRegistration ||
+    vahan.yearManufacturing ||
+    vahan.year ||
+    (vahan.registrationDate ? new Date(vahan.registrationDate).getFullYear() : "") ||
+    (vahan.registration_date ? new Date(vahan.registration_date).getFullYear() : "");
+
+  return {
+    make: trimStr(make),
+    model: trimStr(model),
+    variant: trimStr(variant),
+    fuelType: trimStr(fuelType),
+    year: trimStr(year),
+  };
+}
+
+function toOptions(data, valKey = "masterName", labelKey = "masterName") {
+  return extractData(data)
+    .map((item) => {
+      if (typeof item === "string" || typeof item === "number") {
+        return { value: String(item), label: String(item) };
+      }
+      if (!item || typeof item !== "object") {
+        return { value: "", label: "" };
+      }
+      const val =
+        item.masterName ??
+        item.masterValue ??
+        item.masterCode ??
+        item.value ??
+        item.id ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
+        item[valKey] ??
+        item.name ??
+        item.label ??
+        "";
+      const lbl =
+        item.label ??
+        item.masterName ??
+        item.masterValue ??
+        item.name ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
+        item[labelKey] ??
+        item.value ??
+        String(val);
+      return { value: String(val), label: String(lbl), raw: item };
+    })
+    .filter((o) => o.value !== "");
+}
+
+/** Append `extra` options that are not already present (case-insensitive). */
+function mergeOptions(base, extra) {
+  const seen = new Set(base.map((o) => up(o.value)));
+  const out = [...base];
+  for (const o of extra) {
+    const k = up(o.value);
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(o);
+    }
+  }
+  return out;
+}
+
+/** Make sure every currently-selected value exists as an option. */
+function withSelected(opts, selected) {
+  return mergeOptions(
+    opts,
+    selected.filter(Boolean).map((s) => ({ value: String(s), label: String(s) })),
+  );
+}
+
+const isMissingSelected = (opts, selected) =>
+  selected.some((s) => !opts.some((o) => sameCI(o.value, s)));
+
+/**
+ * Build the option list for fuels/years: primary response, a looser fallback
+ * request when it is empty / missing a selected value, then the selected values.
+ */
+async function buildOptionsWithFallback({ res, selected, canFallback, fetchFallback, label }) {
+  let opts = toOptions(res);
+  if ((!opts.length || isMissingSelected(opts, selected)) && canFallback) {
+    try {
+      opts = mergeOptions(opts, toOptions(await fetchFallback()));
+    } catch (e) {
+      console.warn(`Fallback ${label} error:`, e);
+    }
+  }
+  return withSelected(opts, selected);
+}
+
+function toGenerations(data) {
+  const items = extractData(data);
+  return items.map((item, idx) => {
+    if (typeof item === "string" || typeof item === "number") {
+      return { value: String(item), label: String(item), url: "" };
+    }
+    if (!item || typeof item !== "object") {
+      return { value: `gen_${idx}`, label: `Gen ${idx + 1}`, url: "" };
+    }
+    const val =
+      item.masterName ??
+      item.masterValue ??
+      item.masterCode ??
+      item.value ??
+      item.id ??
+      item.code ??
+      item.vehicleGeneration ??
+      item.generation ??
+      item.name ??
+      `gen_${idx}`;
+    const lbl =
+      item.label ??
+      item.masterName ??
+      item.name ??
+      item.vehicleGeneration ??
+      item.generation ??
+      String(val);
+    const url =
+      item.imageUrl ??
+      item.url ??
+      item.image_url ??
+      item.image ??
+      item.picture ??
+      item.img ??
+      "";
+    return { value: String(val), label: String(lbl), url };
+  });
+}
+
+function normalizePartItem(item, idx) {
+  if (!item || typeof item !== "object") return null;
+  const pNo = item.partNumber || item.oemPartNumber || item.code || `PART_${idx}`;
+  const desc = item.itemDescription || item.partDescription || item.components || item.name || `Part ${idx + 1}`;
+  const brand = item.brandName || item.brand || "-";
+  const agg = (item.aggregate || item.category || item.masterName || "PARTS").trim().toUpperCase();
+  const sub = (item.subAggregate || item.subcategory || "GENERAL").trim().toUpperCase();
+  const mrpVal = parseFloat(item.mrp || item.listPrice || 0);
+  const taxVal = parseFloat(item.taxpercent || 18);
+
+  const discPct =
+    item.partConfig?.discountPercent !== undefined
+      ? parseFloat(item.partConfig.discountPercent)
+      : mrpVal > parseFloat(item.listPrice || item.saleRate || mrpVal)
+        ? Math.round(((mrpVal - parseFloat(item.listPrice || item.saleRate)) / mrpVal) * 100)
+        : 0;
+
+  const saleVal =
+    discPct > 0
+      ? mrpVal * (1 - discPct / 100)
+      : parseFloat(item.listPrice || item.mrp || item.saleRate || 0);
+
+  return {
+    partNumber: pNo,
+    itemDescription: desc,
+    brandName: brand,
+    aggregate: agg,
+    subAggregate: sub,
+    mrp: mrpVal,
+    mrpIncl: Math.round(mrpVal),
+    saleRate: saleVal,
+    priceIncl: Math.round(saleVal),
+    taxpercent: taxVal,
+    discPct,
+    points: item.partConfig?.loyaltyBasePoints || item.points || 0,
+    warrantyDays: item.warrantyDays || 0,
+    eda: item.EDA !== undefined ? item.EDA : item.eda,
+    raw: item,
+  };
+}
+
+function normalizeCartItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const partNo = item.partNumber || item.part_number || item.code || item.cartId || item.id;
+  const desc = item.itemDescription || item.part_desc || item.name || partNo;
+  const brand = item.brandName || item.product_brand || item.brand ;
+  const qty = Number(item.quantity ?? item.qty ?? 1);
+  const mrp = Number(item.mrp ?? item.part_mrp ?? item.listPrice ?? 0);
+  const listPrice = Number(item.listPrice ?? item.list_price ?? item.billingPrice ?? item.saleRate ?? mrp);
+  const billingPrice = Number(item.billingPrice ?? listPrice);
+  const tax = Number(item.taxAmount ?? item.tax ?? 0);
+  const discountPerUnit = Number(item.discountPerUnit ?? Math.max(0, mrp - listPrice));
+  const totalAmount = Number(item.totalAmount ?? item.total ?? qty * (billingPrice + tax));
+
+  return {
+    cartId: String(partNo),
+    id: item.id || String(partNo),
+    name: desc,
+    code: String(partNo),
+    part_number: String(partNo),
+    brand,
+    qty,
+    mrp,
+    saleRate: listPrice,
+    list_price: listPrice,
+    billingPrice,
+    discountPerUnit: Number(discountPerUnit.toFixed(2)),
+    golSavings: item.golSavings || item.savingAmount || 0,
+    tax: Number(tax.toFixed(2)),
+    totalAmount: Number(totalAmount.toFixed(2)),
+    pointsEarned: item.pointsEarned || item.points || item.loyaltyBasePoints || 0,
+    raw: item,
+  };
+}
+
+const ORDER_DETAILS_BY_ENQUIRY = {};
 
 // Category icon mapping - falls back to Settings when the mock icon
 // name doesn't map to a lucide icon.
 const CAT_ICONS = {
-  FILTERS: FilterIcon,
-  BRAKE_SYSTEM: DiscIcon,
-  ENGINE: SettingsIcon,
-  SUSPENSION: MoveVerticalIcon,
-  LIGHTING: LightbulbIcon,
-  WHEELS_AND_TYRES: CircleDotIcon,
-  BATTERY: BatteryChargingIcon,
-  BELTS_AND_TENSIONER: MinusIcon,
-  ACCESSORIES: SparklesIcon,
-  BEARING: Settings2Icon,
-  BODY_PARTS: CarIcon,
-  BRACKET: WrenchIcon,
-  CABLES_AND_WIRES: CableIcon,
-  CHILD_PARTS: BoxesIcon,
-  CLUTCH_SYSTEM: CircleGaugeIcon,
-  ELECTRICAL: ZapIcon,
-  ELECTRICALS_AND_ELECTRONICS: ZapIcon,
-  FLUIDS_COOLANT_AND_GREASE: DropletIcon,
-  FUEL_SYSTEM: FuelIcon,
-  GLASS: SquareIcon,
-  HORNS: MegaphoneIcon,
+  FILTERS: "Filter",
+  BRAKE_SYSTEM: "Disc",
+  ENGINE: "Settings",
+  SUSPENSION: "MoveVertical",
+  LIGHTING: "Lightbulb",
+  WHEELS_AND_TYRES: "CircleDot",
+  BATTERY: "BatteryCharging",
+  BELTS_AND_TENSIONER: "Minus",
+  ACCESSORIES: "Sparkles",
+  BEARING: "Settings2",
+  BODY_PARTS: "Car",
+  BRACKET: "Wrench",
+  CABLES_AND_WIRES: "Cable",
+  CHILD_PARTS: "Boxes",
+  CLUTCH_SYSTEM: "CircleGauge",
+  ELECTRICAL: "Zap",
+  ELECTRICALS_AND_ELECTRONICS: "Zap",
+  FLUIDS_COOLANT_AND_GREASE: "Droplet",
+  FUEL_SYSTEM: "Fuel",
+  GLASS: "Square",
+  HORNS: "Megaphone",
 };
-
-const GLOBAL_CATEGORIES = [
-  ...CATEGORY_OPTIONS,
-  { value: "BEARING", label: "Bearing" },
-  { value: "BODY_PARTS", label: "Body Parts" },
-  { value: "BRACKET", label: "Bracket" },
-  { value: "CABLES_AND_WIRES", label: "Cables and Wires" },
-  { value: "CHILD_PARTS", label: "Child Parts" },
-  { value: "CLUTCH_SYSTEM", label: "Clutch System" },
-  { value: "ELECTRICAL", label: "Electrical" },
-  {
-    value: "ELECTRICALS_AND_ELECTRONICS",
-    label: "Electricals and Electronics",
-  },
-  { value: "FLUIDS_COOLANT_AND_GREASE", label: "Fluids Coolant and Grease" },
-  { value: "FUEL_SYSTEM", label: "Fuel System" },
-  { value: "GLASS", label: "Glass" },
-  { value: "HORNS", label: "Horns" },
-];
-
-const GLOBAL_SUBCATEGORY_MAP = {
-  ...SUBCATEGORY_MAP,
-  BATTERY: [
-    { value: "BATTERY_UNIT", label: "Battery" },
-    { value: "BATTERY_CHILD_PARTS", label: "Battery Child Parts" },
-  ],
-  BRAKE_SYSTEM: [
-    { value: "ABS_PUMP", label: "ABS Pump" },
-    { value: "BRAKE_CALIPER", label: "Brake Caliper" },
-    { value: "BRAKE_DISC", label: "Brake Disc" },
-    { value: "BRAKE_DRUM", label: "Brake Drum" },
-    { value: "BRAKE_FLUID_TANK", label: "Brake Fluid Tank" },
-    { value: "BRAKE_HOSE", label: "Brake Hose" },
-    { value: "BRAKE_LINING", label: "Brake Lining" },
-    { value: "BRAKE_PAD", label: "Brake Pad" },
-    { value: "BRAKE_PEDAL", label: "Brake Pedal" },
-    { value: "BRAKE_REPAIR_KIT", label: "Brake Repair Kit" },
-    { value: "BRAKE_SET", label: "Brake Set" },
-    { value: "BRAKE_SHOE", label: "Brake Shoe" },
-    { value: "BRAKE_VALVE", label: "Brake Valve" },
-    { value: "CALIPER_PINS_AND_ASSY", label: "Caliper Pins & Assy" },
-    { value: "MC_AND_BOOSTER", label: "MC & Booster" },
-    { value: "WHEEL_CYLINDER", label: "Wheel Cylinder" },
-  ],
-};
-
-// A few extra brand names to make the multi-select feel realistic.
-const BRAND_OPTIONS = [
-  "ADD LUB ITEMS",
-  "ANAND MOTOR PRODUCTS",
-  "BMW",
-  "BRAKES INDIA",
-  "CASTROL",
-  "CHEVROLET",
-  "DELPHI TECH",
-  "FORD",
-  "MARUTI SUZUKI",
-  "TATA",
-  "TOYOTA",
-  "SKODA",
-  "HYUNDAI",
-  "VALEO",
-  "BOSCH",
-  "FILTRON",
-  "MYTVS",
-  "MONROE",
-  "FAG",
-  "ZF",
-];
-const BRAND_SELECT_OPTIONS = BRAND_OPTIONS.map((b) => ({ value: b, label: b }));
 
 export default function Global() {
   const [tab, setTab] = useState("catalogue");
   const [mode, setMode] = useState("stock"); // stock | vehicle
   const [phase, setPhase] = useState("select"); // select | explore
 
-  // vehicle mode (all multi-select, progressively revealed)
+  // vehicle mode state
   const [regNo, setRegNo] = useState("");
-  const [generation, setGeneration] = useState(""); // still single-select (card grid)
+  const [generation, setGeneration] = useState("");
   const [previewGen, setPreviewGen] = useState(null);
   const [vMakes, setVMakes] = useState([]);
   const [vModels, setVModels] = useState([]);
   const [vVariants, setVVariants] = useState([]);
   const [vFuels, setVFuels] = useState([]);
   const [vYears, setVYears] = useState([]);
-  // When true (set by a reg-no lookup), Generation is skipped entirely:
-  // hidden from the UI and not required to explore. Manually touching
-  // Make or Model turns this back off, dropping the user back into the
-  // normal Make → Model → Generation → Variant → Fuel → Year chain.
   const [skipGeneration, setSkipGeneration] = useState(false);
 
-  // stock mode (multi-select, searchable)
+  // stock mode state
   const [stockMakes, setStockMakes] = useState([]);
   const [stockModels, setStockModels] = useState([]);
 
-  // shared category chain (multi-select in both modes)
+  // shared filter selections
   const [selectedCats, setSelectedCats] = useState([]);
   const [selectedSubs, setSelectedSubs] = useState([]);
   const [sort, setSort] = useState("default");
   const [selectedBrands, setSelectedBrands] = useState([]);
   const [partQuery, setPartQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
-  const [cart, setCart] = useState(INITIAL_CART_ITEMS);
-  const [orders, setOrders] = useState(INITIAL_ORDERS);
+  // Dynamic API options states
+  const [makeOptions, setMakeOptions] = useState([]);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [generationOptions, setGenerationOptions] = useState([]);
+  const [isLoadingGenerations, setIsLoadingGenerations] = useState(false);
+  const [variantOptions, setVariantOptions] = useState([]);
+  const [fuelOptions, setFuelOptions] = useState([]);
+  const [yearOptions, setYearOptions] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+  const [subcategoryOptions, setSubcategoryOptions] = useState([]);
+  const [brandOptions, setBrandOptions] = useState([]);
+
+  const [partsList, setPartsList] = useState([]);
+  const [isLoadingParts, setIsLoadingParts] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalPartsCount, setTotalPartsCount] = useState(0);
+
+  const [cart, setCart] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [openOrder, setOpenOrder] = useState(null);
 
-  // Stock mode: models are the union across every selected make.
-  const stockModelOptions = useMemo(() => {
-    const set = new Set();
-    stockMakes.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => set.add(m)),
-    );
-    return Array.from(set).map((m) => ({ value: m, label: m }));
-  }, [stockMakes]);
+  // Always-fresh view of the cart for stable callbacks.
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
 
-  // Vehicle mode: same union logic, driven by vMakes instead.
-  const vModelOptions = useMemo(() => {
-    const set = new Set();
-    vMakes.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => set.add(m)),
-    );
-    return Array.from(set).map((m) => ({ value: m, label: m }));
-  }, [vMakes]);
+  const currentMakes = mode === "stock" ? stockMakes : vMakes;
+  const currentModels = mode === "stock" ? stockModels : vModels;
 
-  // Sub-cats merge across every selected category.
-  const activeSubcategoryOptions = useMemo(() => {
-    if (!selectedCats.length) return [];
-    const seen = new Set();
-    const merged = [];
-    selectedCats.forEach((c) => {
-      (GLOBAL_SUBCATEGORY_MAP[c] || []).forEach((s) => {
-        if (!seen.has(s.value)) {
-          seen.add(s.value);
-          merged.push(s);
+  function handleSearchSubmit(queryToSubmit) {
+    const q = queryToSubmit !== undefined ? queryToSubmit : searchInput;
+    const clean = String(q || "").trim();
+
+    if (!clean) {
+      if (partQuery) {
+        setPartQuery("");
+        setSearchInput("");
+        setPage(1);
+      }
+      return;
+    }
+
+    if (clean.length < 4) {
+      showToast.warning("Search query must be at least 4 characters long.");
+      return;
+    }
+
+    setPartQuery(clean);
+    setSearchInput(clean);
+    setPhase("explore");
+    setPage(1);
+  }
+
+  const fetchCart = useCallback(() => {
+    catalogueApi
+      .getCart()
+      .then((res) => {
+        const raw = extractData(res);
+        if (Array.isArray(raw)) {
+          setCart(raw.map(normalizeCartItem).filter(Boolean));
         }
+      })
+      .catch((err) => {
+        console.warn("Error fetching cart from backend:", err);
       });
-    });
-    return merged;
-  }, [selectedCats]);
+  }, []);
+
+
+  const fetchOrders = useCallback(async () => {
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+
+    const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    try {
+      const res =
+        await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+
+      const list = res?.data || res?.orders || extractData(res);
+
+      if (Array.isArray(list)) {
+        setOrders(list);
+      }
+    } catch (err) {
+      console.warn("Failed to load direct enquiry orders:", err.message);
+    }
+  }, []);
+
+  // Fetch orders whenever user switches to the orders tab
+  useEffect(() => {
+    if (tab === "orders") {
+      fetchOrders();
+    }
+  }, [tab, fetchOrders]);
+
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [
+    mode,
+    stockMakes,
+    stockModels,
+    vMakes,
+    vModels,
+    generation,
+    vVariants,
+    vFuels,
+    vYears,
+    selectedCats,
+    selectedSubs,
+    selectedBrands,
+    partQuery,
+  ]);
+
+  // 1. Fetch Makes, Brands, Cart & Orders on mount (customerCode 0046) - run only once
+  useEffect(() => {
+    catalogueApi
+      .getMakes({ customerCode: CUSTOMER_CODE })
+      .then((res) => setMakeOptions(toOptions(res)))
+      .catch(() => setMakeOptions([]));
+
+    catalogueApi
+      .getBrands({ customerCode: CUSTOMER_CODE })
+      .then((res) => setBrandOptions(toOptions(res)))
+      .catch(() => setBrandOptions([]));
+
+    fetchCart();
+    fetchOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 1b. Fetch Categories when Selected Brands, Makes, or Models change
+  useEffect(() => {
+    catalogueApi
+      .getCategories({
+        customerCode: CUSTOMER_CODE,
+        brand: selectedBrands,
+        make: currentMakes,
+        model: currentModels,
+        primary: false,
+      })
+      .then((res) => setCategoryOptions(toOptions(res)))
+      .catch(() => setCategoryOptions([]));
+  }, [selectedBrands, currentMakes, currentModels]);
+
+  // 2. Fetch Models when Makes change
+  useEffect(() => {
+    if (!currentMakes.length) {
+      setModelOptions([]);
+      return;
+    }
+    catalogueApi
+      .getModels({ customerCode: CUSTOMER_CODE, make: currentMakes })
+      .then((res) => setModelOptions(toOptions(res)))
+      .catch(() => setModelOptions([]));
+  }, [currentMakes]);
+
+  // 3. Fetch Generations when Models change (Vehicle mode)
+  useEffect(() => {
+    if (mode !== "vehicle" || !vModels.length) {
+      setGenerationOptions([]);
+      setIsLoadingGenerations(false);
+      return;
+    }
+    setIsLoadingGenerations(true);
+    const fetchGen = async () => {
+      try {
+        let res = await catalogueApi.getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels });
+        let opts = toGenerations(res);
+        if (!opts.length) {
+          res = await catalogueApi.getGenerations({ customerCode: CUSTOMER_CODE, make: vMakes, model: vModels });
+          opts = toGenerations(res);
+        }
+        setGenerationOptions(opts);
+        if (opts.length === 0) {
+          setSkipGeneration(true);
+        }
+      } catch (err) {
+        console.warn("Failed to fetch generations:", err);
+        setGenerationOptions([]);
+        setSkipGeneration(true);
+      } finally {
+        setIsLoadingGenerations(false);
+      }
+    };
+    fetchGen();
+  }, [vMakes, vModels, mode]);
+
+  // 4. Fetch Variants when Generation changes (or skipped)
+  // NOTE: vVariants is intentionally not a dependency (it is only used to keep
+  // already-selected values visible in the list).
+  useEffect(() => {
+    if (mode !== "vehicle" || (!generation && !skipGeneration)) {
+      setVariantOptions([]);
+      return;
+    }
+    const fetchVariants = async () => {
+      try {
+        let res = await catalogueApi.getVariants({
+          customerCode: CUSTOMER_CODE,
+          make: vMakes,
+          model: vModels,
+          vehicleGeneration: generation || null,
+        });
+        let opts = toOptions(res, "variant", "variant");
+        if (!opts.length && generation) {
+          res = await catalogueApi.getVariants({
+            make: vMakes,
+            model: vModels,
+          });
+          opts = toOptions(res, "variant", "variant");
+        }
+        if (!opts.length) {
+          res = await catalogueApi.getVariants({
+            customerCode: CUSTOMER_CODE,
+            make: vMakes,
+            model: vModels,
+            vehicleGeneration: generation || null,
+          });
+          opts = toOptions(res, "variant", "variant");
+        }
+        setVariantOptions(withSelected(opts, vVariants));
+      } catch (err) {
+        console.warn("Failed to fetch variants:", err);
+        setVariantOptions(withSelected([], vVariants));
+      }
+    };
+    fetchVariants();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vMakes, vModels, generation, skipGeneration, mode]);
+
+  // 5. Fetch Fuels when Variants change
+  useEffect(() => {
+    if (mode !== "vehicle" || !vVariants.length) {
+      setFuelOptions([]);
+      return;
+    }
+    const applyFuels = (opts) => {
+      setFuelOptions(opts);
+      if (opts.length === 1) setVFuels([opts[0].value]);
+    };
+    catalogueApi
+      .getFuels({
+        customerCode: CUSTOMER_CODE,
+        make: vMakes,
+        model: vModels,
+        vehicleGeneration: generation || null,
+        variant: vVariants,
+      })
+      .then(async (res) =>
+        applyFuels(
+          await buildOptionsWithFallback({
+            res,
+            selected: vFuels,
+            canFallback: vMakes.length && vModels.length,
+            fetchFallback: () =>
+              catalogueApi.getFuels({
+                customerCode: CUSTOMER_CODE,
+                make: vMakes,
+                model: vModels,
+              }),
+            label: "getFuels",
+          }),
+        ),
+      )
+      .catch(() => applyFuels(withSelected([], vFuels)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vMakes, vModels, generation, vVariants, mode]);
+
+  // 6. Fetch Years when Fuels change
+  useEffect(() => {
+    if (mode !== "vehicle" || !vFuels.length) {
+      setYearOptions([]);
+      return;
+    }
+    catalogueApi
+      .getYears({
+        customerCode: CUSTOMER_CODE,
+        make: vMakes,
+        model: vModels,
+        vehicleGeneration: generation || null,
+        variant: vVariants,
+        fuelType: vFuels,
+      })
+      .then(async (res) =>
+        setYearOptions(
+          await buildOptionsWithFallback({
+            res,
+            selected: vYears,
+            canFallback: vMakes.length && vModels.length,
+            fetchFallback: () =>
+              catalogueApi.getYears({
+                customerCode: CUSTOMER_CODE,
+                make: vMakes,
+                model: vModels,
+              }),
+            label: "getYears",
+          }),
+        ),
+      )
+      .catch(() => setYearOptions(withSelected([], vYears)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vMakes, vModels, generation, vVariants, vFuels, mode]);
+
+  // 7. Fetch Subcategories when Categories or Brands change
+  useEffect(() => {
+    if (!selectedCats.length) {
+      setSubcategoryOptions([]);
+      return;
+    }
+    catalogueApi
+      .getSubcategories({
+        customerCode: CUSTOMER_CODE,
+        make: currentMakes,
+        model: currentModels,
+        aggregate: selectedCats,
+        brand: selectedBrands,
+        primary: false,
+      })
+      .then((res) => setSubcategoryOptions(toOptions(res)))
+      .catch(() => setSubcategoryOptions([]));
+  }, [currentMakes, currentModels, selectedCats, selectedBrands]);
+
+  // 8. Fetch Parts List (getPartsList or generalSearch) with Limit and Offset Pagination
+  useEffect(() => {
+    const cleanQuery = partQuery.trim();
+    if (phase !== "explore" && !cleanQuery) return;
+
+    // Ignore responses from requests that were superseded by newer ones.
+    let cancelled = false;
+
+    setIsLoadingParts(true);
+    if (cleanQuery && phase !== "explore") {
+      setPhase("explore");
+    }
+
+    const basePayload = {
+      customerCode: CUSTOMER_CODE,
+      make: currentMakes,
+      model: currentModels,
+      vehicleGeneration: generation || null,
+      variant: vVariants,
+      fuelType: vFuels,
+      year: vYears,
+      aggregate: selectedCats,
+      subAggregate: selectedSubs,
+      brand: selectedBrands,
+      partNumber: cleanQuery || null,
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    };
+
+    const requestPromise = cleanQuery
+      ? catalogueApi.generalSearch({
+        customerCode: CUSTOMER_CODE,
+        searchKey: cleanQuery,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+      })
+      : catalogueApi.getPartsList(basePayload);
+
+    requestPromise
+      .then((res) => {
+        const raw = extractData(res);
+        if (
+          !cleanQuery &&
+          (!raw || raw.length === 0 || res?.success === false) &&
+          (vVariants.length || vYears.length)
+        ) {
+          // Fallback: search by Make + Model + Categories without strict variant string
+          return catalogueApi.getPartsList({
+            ...basePayload,
+            variant: null,
+            fuelType: null,
+            year: null,
+          });
+        }
+        return res;
+      })
+      .then((res) => {
+        if (cancelled) return;
+        const raw = extractData(res);
+        const explicitTotal = res?.totalCount ?? res?.total;
+        if (explicitTotal !== undefined && explicitTotal !== null) {
+          setTotalPartsCount(explicitTotal);
+        } else if (page === 1) {
+          setTotalPartsCount(res?.count ?? raw.length);
+        } else {
+          setTotalPartsCount((prev) => Math.max(prev, (page - 1) * pageSize + raw.length));
+        }
+        setPartsList(raw.map(normalizePartItem).filter(Boolean));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPartsList([]);
+        setTotalPartsCount(0);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingParts(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    phase,
+    mode,
+    currentMakes,
+    currentModels,
+    generation,
+    vVariants,
+    vFuels,
+    vYears,
+    selectedCats,
+    selectedSubs,
+    selectedBrands,
+    partQuery,
+    page,
+    pageSize,
+  ]);
 
   function handleStockMakesChange(next) {
     setStockMakes(next);
-    const validModels = new Set();
-    next.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => validModels.add(m)),
-    );
-    setStockModels((cur) => cur.filter((m) => validModels.has(m)));
+    setStockModels([]);
   }
 
-  // Vehicle mode chain: changing any link resets everything downstream
-  // so a stale Generation/Variant/Fuel/Year can't linger after an
-  // upstream field changes. Manually touching Make/Model also drops
-  // us out of "reg-no search" mode, since the user is now building the
-  // selection by hand and Generation is required again.
   function handleVMakesChange(next) {
     setVMakes(next);
-    const validModels = new Set();
-    next.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => validModels.add(m)),
-    );
-    setVModels((cur) => cur.filter((m) => validModels.has(m)));
+    setVModels([]);
     setGeneration("");
     setVVariants([]);
     setVFuels([]);
@@ -274,27 +864,21 @@ export default function Global() {
     setVYears([]);
   }
 
-  // Stock mode: multi-select chip grid for categories.
   function toggleCategoryChip(value) {
-    setSelectedCats((cur) =>
-      cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value],
-    );
+    setSelectedCats((cur) => toggleInArray(cur, value));
     setSelectedSubs([]);
   }
   function toggleSubChip(value) {
-    setSelectedSubs((cur) =>
-      cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value],
-    );
+    setSelectedSubs((cur) => toggleInArray(cur, value));
   }
 
-  const canExplore =
-    mode === "stock"
-      ? Boolean(selectedCats.length && selectedSubs.length)
-      : Boolean(selectedCats.length && selectedSubs.length);
+  const canExplore = Boolean(
+    selectedCats.length || currentMakes.length || currentModels.length || partQuery.trim(),
+  );
 
   function explore() {
     if (!canExplore) {
-      showToast.warning("Complete the required selections before exploring.");
+      showToast.warning("Complete selections before exploring.");
       return;
     }
     setPhase("explore");
@@ -315,161 +899,360 @@ export default function Global() {
     setSelectedSubs([]);
     setSelectedBrands([]);
     setPartQuery("");
+    setSearchInput("");
     setSort("default");
     setPhase("select");
   }
 
   function lookupVehicle() {
-    if (!regNo.trim())
-      return showToast.warning("Enter a vehicle registration number.");
-    // Reg-no search only resolves Make → Model → Variant → Fuel → Year.
-    // Generation is intentionally left out of this flow: it stays
-    // hidden and isn't required to explore.
-    setSkipGeneration(true);
-    setVMakes(["HYUNDAI"]);
-    setVModels(["Creta"]);
-    setGeneration("");
-    setVVariants(["SX"]);
-    setVFuels(["Petrol"]);
-    setVYears(["2022"]);
-    showToast.success(`Vehicle ${regNo.toUpperCase()} loaded.`);
+    const cleanRegNo = regNo.trim().toUpperCase();
+    if (!cleanRegNo) {
+      showToast.warning("Please enter a vehicle registration number.");
+      return;
+    }
+
+    const fallbackLookup = () =>
+      catalogueApi.lookupVehicle(cleanRegNo).then(extractVehicleData);
+
+    catalogueApi
+      .getVahanDetails(cleanRegNo)
+      .then((res) => {
+        const extracted = extractVehicleData(res);
+        return extracted && (extracted.make || extracted.model)
+          ? extracted
+          : fallbackLookup();
+      })
+      .catch((err) => {
+        console.warn("getVahanDetails API failed/unauthorized, falling back to lookupVehicle:", err);
+        return fallbackLookup();
+      })
+      .then((data) => {
+        if (data && (data.make || data.model)) {
+          setSkipGeneration(true);
+          if (data.make) setVMakes([data.make]);
+          if (data.model) setVModels([data.model]);
+          if (data.variant) setVVariants([data.variant]);
+          if (data.fuelType) setVFuels([data.fuelType]);
+          if (data.year) setVYears([data.year]);
+
+          showToast.success(`Vehicle ${cleanRegNo} details loaded successfully!`);
+        } else {
+          showToast.info(`No exact catalog mapping found for ${cleanRegNo}. Please select manually.`);
+        }
+      })
+      .catch((error) => {
+        console.error("Vahan lookup error:", error);
+        showToast.error("Failed to fetch vehicle details. Please select manually.");
+      });
   }
 
   const filteredParts = useMemo(() => {
-    const q = partQuery.trim().toLowerCase();
-    return FLAT_PARTS.filter((p) => {
-      if (selectedCats.length && !selectedCats.includes(p.aggregate))
-        return false;
-      if (selectedSubs.length && !selectedSubs.includes(p.subAggregate))
-        return false;
-      if (selectedBrands.length && !selectedBrands.includes(p.brandName))
-        return false;
-      if (
-        q &&
-        ![p.partNumber, p.itemDescription, p.brandName].some((f) =>
-          f.toLowerCase().includes(q),
-        )
-      )
-        return false;
+    const brandKeys = selectedBrands.length
+      ? new Set(selectedBrands.map((b) => up(String(b).trim())))
+      : null;
+
+    const list = partsList.filter((p) => {
+      if (!p) return false;
+      if (brandKeys && !brandKeys.has(up((p.brandName || p.brand || "").trim()))) return false;
       return true;
     });
-  }, [selectedCats, selectedSubs, selectedBrands, partQuery]);
+
+    const sorter = SORTERS[sort];
+    return sorter ? [...list].sort(sorter) : list;
+  }, [partsList, selectedBrands, sort]);
 
   // Aggregate → sub-aggregate two-level grouping for the results panel.
   const grouped = useMemo(() => {
+    // Label lookups (first match wins, matching on value or underscore-less value).
+    const buildLabelMap = (options) => {
+      const m = new Map();
+      for (const o of options) {
+        const k = underscoreToSpace(o.value);
+        if (!m.has(k)) m.set(k, o.label);
+      }
+      return m;
+    };
+    const catLabels = buildLabelMap(categoryOptions);
+    const subLabels = buildLabelMap(subcategoryOptions);
+
     const byAgg = new Map();
     for (const p of filteredParts) {
-      if (!byAgg.has(p.aggregate))
-        byAgg.set(p.aggregate, { agg: p.aggregate, subs: new Map() });
-      const grp = byAgg.get(p.aggregate);
-      if (!grp.subs.has(p.subAggregate)) grp.subs.set(p.subAggregate, []);
-      grp.subs.get(p.subAggregate).push(p);
+      const aggKey = p.aggregate || "PARTS";
+      const subKey = p.subAggregate || "GENERAL";
+      let grp = byAgg.get(aggKey);
+      if (!grp) {
+        grp = { agg: aggKey, subs: new Map(), count: 0 };
+        byAgg.set(aggKey, grp);
+      }
+      let arr = grp.subs.get(subKey);
+      if (!arr) {
+        arr = [];
+        grp.subs.set(subKey, arr);
+      }
+      arr.push(p);
+      grp.count += 1;
     }
-    return Array.from(byAgg.values()).map((g) => ({
+
+    return Array.from(byAgg.values(), (g) => ({
       agg: g.agg,
-      aggLabel:
-        GLOBAL_CATEGORIES.find((c) => c.value === g.agg)?.label ?? g.agg,
-      count: Array.from(g.subs.values()).reduce((s, arr) => s + arr.length, 0),
-      subs: Array.from(g.subs.entries()).map(([subKey, parts]) => ({
+      aggLabel: catLabels.get(underscoreToSpace(g.agg)) ?? g.agg,
+      count: g.count,
+      subs: Array.from(g.subs, ([subKey, parts]) => ({
         sub: subKey,
-        subLabel:
-          (GLOBAL_SUBCATEGORY_MAP[g.agg] || []).find((s) => s.value === subKey)
-            ?.label ?? subKey,
+        subLabel: subLabels.get(underscoreToSpace(subKey)) ?? subKey,
         parts,
       })),
     }));
-  }, [filteredParts]);
+  }, [filteredParts, categoryOptions, subcategoryOptions]);
 
-  const totalParts = filteredParts.length;
+  const availableBrands = useMemo(() => {
+    const set = new Set();
+    for (const item of partsList) {
+      if (!item) continue;
+      const b = (item.brandName || item.brand || "").trim();
+      if (b) set.add(b);
+    }
+    for (const sb of selectedBrands) {
+      if (sb) set.add(String(sb).trim());
+    }
+    return Array.from(set)
+      .sort()
+      .map((b) => ({ value: b, label: b }));
+  }, [partsList, selectedBrands]);
 
-  function toggleGroup(key) {
+  // part number (upper-cased) -> { qty, cartId } for O(1) row lookups.
+  const cartLookup = useMemo(() => {
+    const m = new Map();
+    for (const c of cart) {
+      for (const k of [c.cartId, c.code, c.part_number]) {
+        const key = up(k);
+        if (key && !m.has(key)) m.set(key, { qty: c.qty, cartId: c.cartId });
+      }
+    }
+    return m;
+  }, [cart]);
+
+  const toggleGroup = useCallback((key) => {
     setCollapsedGroups((cur) => {
       const next = new Set(cur);
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
-  }
+  }, []);
 
-  function addToCart(part) {
-    const cartId = part.partNumber;
-    const existing = cart.find((c) => c.cartId === cartId);
-    if (existing) {
+  const addToCart = useCallback(
+    async (part) => {
+      const partNo = part.partNumber || part.code;
+      const listPrice = part.saleRate || part.list_price || part.mrp || 0;
+      const newItem = normalizeCartItem({
+        partNumber: partNo,
+        part_number: partNo,
+        itemDescription: part.itemDescription || part.name,
+        brandName: part.brandName || part.brand,
+        mrp: part.mrp || 0,
+        saleRate: listPrice,
+        listPrice,
+        taxpercent: part.taxpercent || part.tax || 0,
+        quantity: 1,
+      });
+
+      // 1. Optimistic UI update
+      setCart((cur) => {
+        const idx = cur.findIndex((c) => matchesCartId(c, partNo));
+        if (idx >= 0) {
+          const copy = [...cur];
+          copy[idx] = { ...copy[idx], qty: copy[idx].qty + 1 };
+          return copy;
+        }
+        return [...cur, newItem];
+      });
+
+      showToast.success(`${part.itemDescription || partNo} added to cart`);
+
+      // 2. Async backend API call & sync
+      try {
+        await catalogueApi.addToCart({
+          part_number: partNo,
+          description: part.itemDescription || part.name,
+          mrp: part.mrp || 0,
+          list_price: listPrice,
+          tax: part.taxpercent || part.tax || 0,
+          qty: 1,
+          brand_name: part.brandName || part.brand || "",
+        });
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend addToCart error:", err);
+      }
+    },
+    [fetchCart],
+  );
+
+  const updateCartQty = useCallback(
+    async (cartId, actionOrQty) => {
+      const item = cartRef.current.find((c) => matchesCartId(c, cartId));
+      const partNumber = item?.part_number || item?.code || cartId;
+
+      let action = "increase";
+      if (typeof actionOrQty === "string") {
+        action = actionOrQty;
+      } else if (item) {
+        action = actionOrQty > item.qty ? "increase" : "decrease";
+      }
+
+      const targetQty =
+        typeof actionOrQty === "number"
+          ? actionOrQty
+          : action === "increase"
+            ? (item?.qty || 0) + 1
+            : Math.max(0, (item?.qty || 1) - 1);
+
+      // Optimistic UI update
       setCart((cur) =>
-        cur.map((c) =>
-          c.cartId === cartId ? bumpQty(c, +1, part.taxpercent) : c,
-        ),
+        targetQty <= 0
+          ? cur.filter((c) => !matchesCartId(c, cartId))
+          : cur.map((c) => (matchesCartId(c, cartId) ? { ...c, qty: targetQty } : c)),
       );
-    } else {
-      const qty = 1;
-      const tax = part.saleRate * (part.taxpercent / 100) * qty;
-      setCart((cur) => [
-        ...cur,
-        {
-          cartId,
-          name: part.itemDescription,
-          code: part.partNumber,
-          brand: part.brandName,
-          qty,
-          mrp: part.mrp,
-          saleRate: part.saleRate,
-          discountPerUnit: +(part.mrp - part.saleRate).toFixed(2),
-          golSavings: 0,
-          billingPrice: part.saleRate,
-          tax: +tax.toFixed(2),
-          totalAmount: +(part.saleRate * qty + tax).toFixed(2),
-          pointsEarned: part.points || 0,
-          salesPriceGroup: part.salesPriceGroup,
-        },
-      ]);
+
+      try {
+        await catalogueApi.updateCartQty(partNumber, action);
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend updateCartQty error:", err);
+      }
+    },
+    [fetchCart],
+  );
+
+  const removeFromCart = useCallback(
+    async (cartId) => {
+      const item = cartRef.current.find((c) => matchesCartId(c, cartId));
+      const partNumber = item?.part_number || item?.code || cartId;
+
+      // Optimistic UI update
+      setCart((cur) => cur.filter((c) => !matchesCartId(c, cartId)));
+
+      try {
+        await catalogueApi.removeCartItem(partNumber);
+        showToast.success("Item removed from cart");
+        fetchCart();
+      } catch (err) {
+        console.warn("Backend removeCartItem error:", err);
+      }
+    },
+    [fetchCart],
+  );
+
+  async function checkout(selectedItems) {
+    const itemsToCheckout =
+      Array.isArray(selectedItems) && selectedItems.length > 0 ? selectedItems : cart;
+
+    if (!itemsToCheckout.length) {
+      showToast.warning("Please select at least one item to proceed to checkout.");
+      return;
     }
-    showToast.success(`${part.itemDescription} added to cart`);
-  }
-  function updateCartQty(cartId, qty) {
-    if (qty <= 0)
-      return setCart((cur) => cur.filter((c) => c.cartId !== cartId));
-    setCart((cur) =>
-      cur.map((c) => (c.cartId === cartId ? bumpQty(c, qty - c.qty, 18) : c)),
-    );
-  }
-  function removeFromCart(cartId) {
-    setCart((cur) => cur.filter((c) => c.cartId !== cartId));
-  }
-  function checkout() {
-    if (!cart.length) return;
-    const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-    setOrders((cur) => [
-      {
-        enquiryNo,
-        customerCode: "NMSA0786",
-        source: "GOL",
-        status: "PROCESSING",
-        orderCreationDate: new Date().toISOString(),
-      },
-      ...cur,
-    ]);
-    setCart([]);
-    showToast.success(`Order ${enquiryNo} placed.`);
-    setTab("orders");
-  }
-  function viewOrder(order) {
-    const detail = ORDER_DETAILS_BY_ENQUIRY[order.enquiryNo] || {
-      enquiry_no: order.enquiryNo,
-      source: order.source,
-      status: order.status,
-      message: "Details not available yet.",
-      reference_no: "",
-      order_nos: [],
-      parts: [],
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+    const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.customer_account_id ||
+      "";
+
+    const customerCode =
+      (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
+      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
+      loggedInUser?.outlet?.customer_code ||
+      loggedInUser?.outlet?.customerCode ||
+      "NMSA0786";
+
+    const payload = {
+      workshopId: String(workshopId).trim(),
+      customer_code: String(customerCode).trim(),
+      source: "GOL",
+      channel: "B2B-API",
+      reference_no: `REF-GOL-${Date.now()}`,
+      vehicle_no:
+        mode === "vehicle" && vahanData?.registrationNumber
+          ? vahanData.registrationNumber
+          : "",
+      parts: itemsToCheckout.map((item) => ({
+        part_no: String(
+          item.part_number || item.code || item.partNumber || item.cartId || item.id
+        ).trim(),
+        qty: Number(item.qty || item.quantity || 1),
+      })),
     };
-    setOpenOrder(detail);
+
+    try {
+      const response = await catalogueApi.createDirectEnquiryOrder(payload);
+
+      const isSuccess =
+        response?.success === true ||
+        Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
+
+      const enqNo =
+        response?.enquiry_no ||
+        response?.data?.enquiry_no ||
+        response?.enquiryNo;
+
+      if (!isSuccess) {
+        const errorMsg =
+          response?.message ||
+          response?.error?.message ||
+          response?.data?.message ||
+          "Failed to place order";
+        showToast.error(errorMsg);
+        return;
+      }
+
+      showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
+
+      // Remove only checked-out items from cart
+      const checkedOutKeys = new Set(
+        itemsToCheckout.map((i) =>
+          String(i.part_number || i.code || i.partNumber || i.cartId || i.id).trim()
+        )
+      );
+
+      setCart((cur) =>
+        cur.filter((c) => {
+          const key = String(c.part_number || c.code || c.partNumber || c.cartId || c.id).trim();
+          return !checkedOutKeys.has(key);
+        })
+      );
+
+      // Also remove from backend cart to stay in sync
+      itemsToCheckout.forEach((item) => {
+        const pNo = item.part_number || item.code || item.partNumber;
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+      });
+
+      setTab("orders");
+      fetchOrders();
+    } catch (err) {
+      console.error("Backend createDirectEnquiryOrder error:", err);
+      const errorMsg =
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        "Error placing order";
+      showToast.error(errorMsg);
+    }
   }
 
-  // Breadcrumb sources — both modes are arrays now, so this unifies cleanly.
-  const breadcrumbMakes = mode === "stock" ? stockMakes : vMakes;
-  const breadcrumbModels = mode === "stock" ? stockModels : vModels;
-  const breadcrumbVariant = mode === "vehicle" ? vVariants : [];
-  const breadcrumbFuel = mode === "vehicle" ? vFuels : [];
-  const breadcrumbYear = mode === "vehicle" ? vYears : [];
+  function viewOrder(order) {
+    setOpenOrder(order);
+  }
+
+  const isVehicle = mode === "vehicle";
 
   return (
     <div className="space-y-4">
@@ -491,7 +1274,7 @@ export default function Global() {
               <span
                 className={clsx(
                   "text-sm font-semibold uppercase tracking-wide",
-                  mode === "stock" ? "text-ink-800" : "text-ink-400",
+                  !isVehicle ? "text-ink-800" : "text-ink-400",
                 )}
               >
                 Stock Order
@@ -499,27 +1282,27 @@ export default function Global() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={mode === "vehicle"}
+                aria-checked={isVehicle}
                 onClick={() => {
-                  setMode(mode === "stock" ? "vehicle" : "stock");
+                  setMode(isVehicle ? "stock" : "vehicle");
                   clearAll();
                 }}
                 className={clsx(
                   "relative h-6 cursor-pointer w-11 rounded-full transition-colors",
-                  mode === "vehicle" ? "bg-brand-600" : "bg-ink-300",
+                  isVehicle ? "bg-brand-600" : "bg-ink-300",
                 )}
               >
                 <span
                   className={clsx(
                     "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
-                    mode === "vehicle" ? "translate-x-0" : "-translate-x-5",
+                    isVehicle ? "translate-x-0" : "-translate-x-5",
                   )}
                 />
               </button>
               <span
                 className={clsx(
                   "text-sm font-semibold uppercase tracking-wide",
-                  mode === "vehicle" ? "text-ink-800" : "text-ink-400",
+                  isVehicle ? "text-ink-800" : "text-ink-400",
                 )}
               >
                 Vehicle Order
@@ -538,7 +1321,6 @@ export default function Global() {
                 onVMakesChange={handleVMakesChange}
                 vModels={vModels}
                 onVModelsChange={handleVModelsChange}
-                vModelOptions={vModelOptions}
                 vVariants={vVariants}
                 onVVariantsChange={handleVVariantsChange}
                 vFuels={vFuels}
@@ -548,6 +1330,8 @@ export default function Global() {
                 generation={generation}
                 setGeneration={handleGenerationChange}
                 skipGeneration={skipGeneration}
+                setSkipGeneration={setSkipGeneration}
+                isLoadingGenerations={isLoadingGenerations}
                 onPreviewGen={setPreviewGen}
                 regNo={regNo}
                 setRegNo={setRegNo}
@@ -556,49 +1340,69 @@ export default function Global() {
                 onStockMakesChange={handleStockMakesChange}
                 stockModels={stockModels}
                 setStockModels={setStockModels}
-                stockModelOptions={stockModelOptions}
+                makeOptions={makeOptions}
+                modelOptions={modelOptions}
+                generationOptions={generationOptions}
+                variantOptions={variantOptions}
+                fuelOptions={fuelOptions}
+                yearOptions={yearOptions}
+                categoryOptions={categoryOptions}
+                subcategoryOptions={subcategoryOptions}
                 selectedCats={selectedCats}
                 toggleCategoryChip={toggleCategoryChip}
                 setSelectedCats={setSelectedCats}
                 selectedSubs={selectedSubs}
                 toggleSubChip={toggleSubChip}
                 setSelectedSubs={setSelectedSubs}
-                activeSubcategoryOptions={activeSubcategoryOptions}
-                partQuery={partQuery}
-                setPartQuery={setPartQuery}
+                searchInput={searchInput}
+                setSearchInput={setSearchInput}
+                onSearchSubmit={handleSearchSubmit}
                 selectedBrands={selectedBrands}
                 setSelectedBrands={setSelectedBrands}
+                brandOptions={brandOptions}
                 onExplore={explore}
                 canExplore={canExplore}
               />
             ) : (
               <ExploreArea
                 mode={mode}
-                makes={breadcrumbMakes}
-                models={breadcrumbModels}
+                makes={currentMakes}
+                models={currentModels}
                 generation={generation}
                 skipGeneration={skipGeneration}
-                variants={breadcrumbVariant}
-                fuels={breadcrumbFuel}
-                years={breadcrumbYear}
+                variants={isVehicle ? vVariants : EMPTY_ARRAY}
+                fuels={isVehicle ? vFuels : EMPTY_ARRAY}
+                years={isVehicle ? vYears : EMPTY_ARRAY}
                 selectedCats={selectedCats}
                 selectedSubs={selectedSubs}
-                activeSubcategoryOptions={activeSubcategoryOptions}
+                categoryOptions={categoryOptions}
+                activeSubcategoryOptions={subcategoryOptions}
                 onClearEdit={clearAll}
                 onEditSelection={() => setPhase("select")}
                 sort={sort}
                 setSort={setSort}
-                partQuery={partQuery}
-                setPartQuery={setPartQuery}
+                searchInput={searchInput}
+                setSearchInput={setSearchInput}
+                onSearchSubmit={handleSearchSubmit}
                 selectedBrands={selectedBrands}
                 setSelectedBrands={setSelectedBrands}
-                totalParts={totalParts}
+                brandOptions={availableBrands}
+                totalParts={totalPartsCount}
                 grouped={grouped}
                 collapsedGroups={collapsedGroups}
                 toggleGroup={toggleGroup}
-                cart={cart}
+                cartLookup={cartLookup}
                 onAdd={addToCart}
                 onQty={updateCartQty}
+                isLoadingParts={isLoadingParts}
+                page={page}
+                pageSize={pageSize}
+                totalPartsCount={totalPartsCount}
+                onPageChange={setPage}
+                onPageSizeChange={(newSize) => {
+                  setPageSize(newSize);
+                  setPage(1);
+                }}
               />
             )}
           </Card>
@@ -611,6 +1415,8 @@ export default function Global() {
             items={cart}
             onRemove={removeFromCart}
             onCheckout={checkout}
+            onUpdateQty={updateCartQty}
+            onBrowseParts={() => setTab("catalogue")}
           />
         </Card>
       )}
@@ -619,7 +1425,7 @@ export default function Global() {
           <CatalogueOrdersTable
             orders={orders}
             onView={viewOrder}
-            onRefresh={() => showToast.success("Orders refreshed")}
+            onRefresh={fetchOrders}
           />
         </Card>
       )}
@@ -658,6 +1464,8 @@ export default function Global() {
   );
 }
 
+const EMPTY_ARRAY = [];
+
 /* ─── Selection area ─── */
 
 function SelectionArea({
@@ -666,7 +1474,6 @@ function SelectionArea({
   onVMakesChange,
   vModels,
   onVModelsChange,
-  vModelOptions,
   vVariants,
   onVVariantsChange,
   vFuels,
@@ -676,6 +1483,8 @@ function SelectionArea({
   generation,
   setGeneration,
   skipGeneration,
+  setSkipGeneration,
+  isLoadingGenerations,
   onPreviewGen,
   regNo,
   setRegNo,
@@ -684,39 +1493,57 @@ function SelectionArea({
   onStockMakesChange,
   stockModels,
   setStockModels,
-  stockModelOptions,
+  makeOptions,
+  modelOptions,
+  generationOptions,
+  variantOptions,
+  fuelOptions,
+  yearOptions,
+  categoryOptions,
+  subcategoryOptions,
   selectedCats,
   toggleCategoryChip,
   setSelectedCats,
   selectedSubs,
   toggleSubChip,
   setSelectedSubs,
-  activeSubcategoryOptions,
-  partQuery,
-  setPartQuery,
+  searchInput,
+  setSearchInput,
+  onSearchSubmit,
   selectedBrands,
   setSelectedBrands,
+  brandOptions = [],
   onExplore,
   canExplore,
 }) {
-  const showModelSlot = mode === "stock" || vMakes.length > 0;
+  const isStock = mode === "stock";
+  const showModelSlot = isStock || vMakes.length > 0;
 
   const chainUnlocked =
-    mode === "vehicle" && vModels.length > 0 && (skipGeneration || generation);
+    !isStock && vModels.length > 0 && (skipGeneration || generation);
 
   return (
     <div className="space-y-6 p-5">
-      {mode === "vehicle" && (
-        <div className="flex items-center gap-3">
-          <div>
-            <Input
+      {!isStock && (
+        <div className="flex flex-col sm:flex-row items-center gap-3 p-4 bg-ink-50 rounded-xl border border-ink-200 mb-6">
+          <div className="relative flex-1 w-full">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+            <input
               type="text"
               value={regNo}
               onChange={(e) => setRegNo(e.target.value.toUpperCase())}
-              placeholder="Enter Vehicle Number"
+              onKeyDown={(e) => e.key === "Enter" && onLookup()}
+              placeholder="ENTER REGISTRATION NO "
+              className="w-full rounded-lg border border-ink-200 bg-white py-2 pl-9 pr-3 text-sm font-semibold uppercase placeholder:normal-case placeholder:font-normal placeholder:text-ink-400 focus:border-accent-500 focus:outline-none"
             />
           </div>
-          <Button onClick={onLookup}>Search</Button>
+          <button
+            type="button"
+            onClick={onLookup}
+            className="w-full sm:w-auto px-5 py-2 text-xs font-semibold uppercase tracking-wider text-white bg-accent-500 rounded-lg hover:bg-accent-600 transition-colors cursor-pointer"
+          >
+            Search Vehicle
+          </button>
         </div>
       )}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
@@ -728,32 +1555,29 @@ function SelectionArea({
         >
           <FilterField label="Make">
             <MultiSelect
-              label="Make"
-              options={MAKE_OPTIONS}
-              value={mode === "stock" ? stockMakes : vMakes}
-              onChange={mode === "stock" ? onStockMakesChange : onVMakesChange}
+              options={makeOptions}
+              value={isStock ? stockMakes : vMakes}
+              onChange={isStock ? onStockMakesChange : onVMakesChange}
               placeholder="Select Make"
             />
           </FilterField>
           {showModelSlot && (
             <FilterField label="Model">
               <MultiSelect
-                label="Model"
-                options={mode === "stock" ? stockModelOptions : vModelOptions}
-                value={mode === "stock" ? stockModels : vModels}
-                onChange={mode === "stock" ? setStockModels : onVModelsChange}
+                options={modelOptions}
+                value={isStock ? stockModels : vModels}
+                onChange={isStock ? setStockModels : onVModelsChange}
                 placeholder="Select Model"
-                disabled={mode === "stock" && !stockMakes.length}
+                disabled={isStock ? !stockMakes.length : !vMakes.length}
               />
             </FilterField>
           )}
         </div>
-        {mode === "stock" && (
+        {isStock && (
           <>
             <FilterField label="Brand">
               <MultiSelect
-                label="Brand"
-                options={BRAND_SELECT_OPTIONS}
+                options={brandOptions}
                 value={selectedBrands}
                 onChange={setSelectedBrands}
                 placeholder="Select Brand"
@@ -761,86 +1585,143 @@ function SelectionArea({
             </FilterField>
 
             <div>
-              <div className="relative">
-                <div className="mt-3.5">
-                  <Input
-                    type="text"
-                    value={partQuery}
-                    onChange={(e) => setPartQuery(e.target.value)}
-                    placeholder="Search parts (e.g., wiper, brake pad)"
-                  />
-                </div>
-                <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+              <div className="relative mt-3.5">
+                <Input
+                  type="text"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      onSearchSubmit();
+                    }
+                  }}
+                  placeholder="Search parts (Eg.Brake pad, Wiper, etc..) - min. 4 chars"
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => onSearchSubmit()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-ink-400 hover:text-accent-600 transition-colors cursor-pointer"
+                  title="Search parts (min. 4 chars)"
+                >
+                  <Search className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </>
         )}
       </div>
 
-      {/* Generation only appears once ≥1 Model is picked, and only for
-          the manual chain — a reg-no search skips it entirely. */}
-      {mode === "vehicle" && !skipGeneration && vModels.length > 0 && (
+      {!isStock && !skipGeneration && vModels.length > 0 && (
         <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-500">
-            Generation
-          </p>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">
+              Generation
+            </p>
+            <button
+              type="button"
+              onClick={() => setSkipGeneration(true)}
+              className="text-xs font-medium text-brand-600 hover:text-brand-700 underline cursor-pointer"
+            >
+              Skip Generation
+            </button>
+          </div>
           <div className="flex flex-wrap gap-3">
-            {GENERATIONS.map((g) => {
-              const active = generation === g.value;
-              return (
-                <div
-                  key={g.value}
-                  className={clsx(
-                    "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
-                    active
-                      ? "border-accent-500 bg-accent-50"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
+            {isLoadingGenerations ? (
+              <div className="flex items-center gap-2 py-3 text-xs text-ink-400">
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent-500 border-t-transparent" />
+                Loading generations...
+              </div>
+            ) : generationOptions.length === 0 ? (
+              <div className="py-2 text-xs text-ink-400">
+                No generations available for this model.{" "}
+                <button
+                  type="button"
+                  onClick={() => setSkipGeneration(true)}
+                  className="font-medium text-brand-600 hover:text-brand-700 underline cursor-pointer"
                 >
-                  <button
-                    type="button"
-                    onClick={() => setGeneration(active ? "" : g.value)}
+                  Proceed to variants
+                </button>
+              </div>
+            ) : (
+              generationOptions.map((g) => {
+                const active = generation === g.value;
+                return (
+                  <div
+                    key={g.value}
                     className={clsx(
-                      "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border",
+                      "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
                       active
-                        ? "border-accent-500 bg-accent-500"
-                        : "border-ink-300 bg-white",
+                        ? "border-accent-500 bg-accent-50"
+                        : "border-ink-200 hover:border-ink-300",
                     )}
-                    aria-label={`Select ${g.label}`}
                   >
-                    {active && <Check className="h-3.5 w-3.5 text-white" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onPreviewGen(g)}
-                    className="block w-full cursor-zoom-in"
-                  >
-                    <img
-                      src={g.url}
-                      alt={g.label}
-                      className="mx-auto h-16 w-auto object-cover"
-                    />
-                    <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
-                      {g.label.split(" (")[0]}
-                    </p>
-                  </button>
-                </div>
-              );
-            })}
+                    <button
+                      type="button"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className={clsx(
+                        "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border z-10",
+                        active
+                          ? "border-accent-500 bg-accent-500"
+                          : "border-ink-300 bg-white",
+                      )}
+                      aria-label={`Select ${g.label}`}
+                    >
+                      {active && <Check className="h-3.5 w-3.5 text-white" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className="block w-full cursor-pointer text-left"
+                    >
+                      {g.url ? (
+                        <img
+                          src={g.url}
+                          alt={g.label}
+                          className="mx-auto h-16 w-auto object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                            if (e.currentTarget.nextSibling) {
+                              e.currentTarget.nextSibling.style.display = "flex";
+                            }
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg bg-brand-50 text-brand-600"
+                        style={{ display: g.url ? "none" : "flex" }}
+                      >
+                        <Car className="h-8 w-8" />
+                      </div>
+                      <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
+                        {g.label.split(" (")[0]}
+                      </p>
+                    </button>
+                    {g.url && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPreviewGen(g);
+                        }}
+                        className="mt-1 block mx-auto text-[10px] text-ink-400 hover:text-ink-600 underline cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
 
-      {/* Variant only once the chain is unlocked (Generation picked in
-          the manual flow, or skipped via reg-no search); Fuel Type
-          only once ≥1 Variant is picked; Year only once ≥1 Fuel Type
-          is picked. */}
       {chainUnlocked && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <FilterField label="Variant">
             <MultiSelect
-              label="Variant"
-              options={VARIANT_OPTIONS}
+              options={variantOptions}
               value={vVariants}
               onChange={onVVariantsChange}
               placeholder="Select Variant"
@@ -849,8 +1730,7 @@ function SelectionArea({
           {vVariants.length > 0 && (
             <FilterField label="Fuel Type">
               <MultiSelect
-                label="Fuel Type"
-                options={FUEL_OPTIONS}
+                options={fuelOptions}
                 value={vFuels}
                 onChange={onVFuelsChange}
                 placeholder="Select Fuel Type"
@@ -860,8 +1740,7 @@ function SelectionArea({
           {vFuels.length > 0 && (
             <FilterField label="Year">
               <MultiSelect
-                label="Year"
-                options={YEAR_OPTIONS}
+                options={yearOptions}
                 value={vYears}
                 onChange={setVYears}
                 placeholder="Select Year"
@@ -871,33 +1750,30 @@ function SelectionArea({
         </div>
       )}
 
-      {mode === "vehicle" ? (
+      {!isStock ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr_auto]">
           <FilterField label="Categories">
             <MultiSelect
-              label="Categories"
-              options={GLOBAL_CATEGORIES}
+              options={categoryOptions}
               value={selectedCats}
               onChange={(next) => {
                 setSelectedCats(next);
                 setSelectedSubs([]);
               }}
               placeholder="Select Categories"
-              disabled={!vMakes.length}
               withSelectAll
               selectAllLabel="All"
             />
           </FilterField>
           <FilterField label="Sub Categories">
             <MultiSelect
-              label="Sub Categories"
-              options={activeSubcategoryOptions}
+              options={subcategoryOptions}
               value={selectedSubs}
               onChange={setSelectedSubs}
               placeholder="Select Sub Categories"
               disabled={!selectedCats.length}
               withSelectAll
-              selectAllLabel="All "
+              selectAllLabel="All"
             />
           </FilterField>
           <div className="self-end">
@@ -908,13 +1784,12 @@ function SelectionArea({
         </div>
       ) : (
         <StockCategoryChips
+          categoryOptions={categoryOptions}
           selectedCats={selectedCats}
           toggleCategoryChip={toggleCategoryChip}
-          setSelectedCats={setSelectedCats}
           selectedSubs={selectedSubs}
           toggleSubChip={toggleSubChip}
-          setSelectedSubs={setSelectedSubs}
-          activeSubcategoryOptions={activeSubcategoryOptions}
+          activeSubcategoryOptions={subcategoryOptions}
           onExplore={onExplore}
           canExplore={canExplore}
         />
@@ -923,53 +1798,42 @@ function SelectionArea({
   );
 }
 
+function SelectedCount({ count }) {
+  return (
+    <span
+      className={clsx(
+        "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+        count ? "bg-brand-600 text-white" : "bg-brand-100 text-brand-700",
+      )}
+    >
+      {count} selected
+    </span>
+  );
+}
+
 function StockCategoryChips({
+  categoryOptions = [],
   selectedCats,
   toggleCategoryChip,
-  setSelectedCats,
   selectedSubs,
   toggleSubChip,
-  setSelectedSubs,
-  activeSubcategoryOptions,
+  activeSubcategoryOptions = [],
   onExplore,
   canExplore,
 }) {
-  const allCatsSelected = selectedCats.length === GLOBAL_CATEGORIES.length;
-  const allSubsSelected =
-    activeSubcategoryOptions.length > 0 &&
-    selectedSubs.length === activeSubcategoryOptions.length;
+  const subsList = activeSubcategoryOptions || [];
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div>
         <div className="mb-3 flex items-center gap-2">
           <p className="text-base font-semibold text-ink-800">Categories</p>
-          <span
-            className={clsx(
-              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-              selectedCats.length
-                ? "bg-brand-600 text-white"
-                : "bg-brand-100 text-brand-700",
-            )}
-          >
-            {selectedCats.length} selected
-          </span>
-          {/* <button
-            type="button"
-            onClick={() =>
-              setSelectedCats(
-                allCatsSelected ? [] : GLOBAL_CATEGORIES.map((c) => c.value),
-              )
-            }
-            className="ml-auto text-[11px] font-semibold text-brand-700 hover:underline"
-          >
-            {allCatsSelected ? "Clear all" : "Select all"}
-          </button> */}
+          <SelectedCount count={selectedCats.length} />
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {GLOBAL_CATEGORIES.map((c) => {
+          {categoryOptions.map((c) => {
             const active = selectedCats.includes(c.value);
-            const Icon = CAT_ICONS[c.value] ?? SettingsIcon;
+            const Icon = Icons[CAT_ICONS[c.value]] ?? Icons.Settings;
             return (
               <button
                 key={c.value}
@@ -998,40 +1862,16 @@ function StockCategoryChips({
       <div>
         <div className="mb-3 flex items-center gap-2">
           <p className="text-base font-semibold text-ink-800">Sub Categories</p>
-          <span
-            className={clsx(
-              "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-              selectedSubs.length
-                ? "bg-brand-600 text-white"
-                : "bg-brand-100 text-brand-700",
-            )}
-          >
-            {selectedSubs.length} selected
-          </span>
-          {/* {activeSubcategoryOptions.length > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                setSelectedSubs(
-                  allSubsSelected
-                    ? []
-                    : activeSubcategoryOptions.map((s) => s.value),
-                )
-              }
-              className="ml-auto text-[11px] font-semibold text-brand-700 hover:underline"
-            >
-              {allSubsSelected ? "Clear all" : "Select all"}
-            </button>
-          )} */}
+          <SelectedCount count={selectedSubs.length} />
         </div>
-        {activeSubcategoryOptions.length === 0 ? (
+        {subsList.length === 0 ? (
           <div className="rounded-lg border border-dashed border-ink-200 px-3 py-6 text-center text-xs text-ink-500">
             Select a category to see its sub-categories.
           </div>
         ) : (
           <>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {activeSubcategoryOptions.map((s) => {
+              {subsList.map((s) => {
                 const active = selectedSubs.includes(s.value);
                 return (
                   <button
@@ -1045,7 +1885,7 @@ function StockCategoryChips({
                         : "border-ink-200 bg-white text-ink-700 hover:bg-ink-50",
                     )}
                   >
-                    <SettingsIcon
+                    <Icons.Settings
                       className={clsx(
                         "h-4 w-4",
                         active ? "text-accent-600" : "text-accent-500",
@@ -1075,6 +1915,98 @@ function StockCategoryChips({
 
 /* ─── Explore area (results) ─── */
 
+const TH_BASE = "px-4 py-2.5";
+
+/** One memoised table row so qty changes only re-render the affected part. */
+const PartRow = memo(function PartRow({ p, qty = 0, cartId, onAdd, onQty }) {
+  const inCart = cartId !== undefined;
+  return (
+    <tr className="border-t border-ink-100">
+      <td className="px-4 py-3">
+        <p className="font-semibold text-ink-800">{p.itemDescription}</p>
+        <p className="mt-0.5 text-xs text-brand-700">{p.partNumber}</p>
+      </td>
+      <td className="px-4 py-3">
+        <span className="inline-block rounded bg-brand-600 px-2.5 py-1 text-[11px] font-semibold text-white">
+          {p.brandName}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-center font-semibold text-ink-800">
+        ₹{p.mrpIncl.toLocaleString("en-IN")}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-600">
+        {p.discPct > 0 ? `${p.discPct}%` : "—"}
+      </td>
+      <td className="px-4 py-3 text-center font-semibold text-ink-800">
+        ₹{p.priceIncl.toLocaleString("en-IN")}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-500">{p.points || "—"}</td>
+      <td className="px-4 py-3 text-center text-ink-500">
+        {p.warrantyDays ? `${p.warrantyDays}d` : "—"}
+      </td>
+      <td className="px-4 py-3 text-center text-ink-500">
+        {p.eda != null ? `${p.eda}d` : "—"}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex justify-center">
+          <CatalogueQtyStepper
+            value={qty}
+            onChange={(v) =>
+              inCart ? onQty(cartId, v) : v > 0 ? onAdd(p) : null
+            }
+            min={0}
+          />
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+function PartsTable({ parts, cartLookup, onAdd, onQty }) {
+  return (
+    <div className="overflow-x-auto ">
+      <table className="w-full min-w-[960px] text-sm">
+        <thead>
+          <tr className="border-t border-ink-100 bg-ink-50/60 text-left text-[11px] font-medium text-ink-500">
+            <th className={TH_BASE}>PART NAME</th>
+            <th className={TH_BASE}>BRAND NAME</th>
+            <th className={clsx(TH_BASE, "text-center")}>
+              MRP
+              <br />
+              <span className="text-[9px] normal-case">(INCL. TAX)</span>
+            </th>
+            <th className={clsx(TH_BASE, "text-center")}>DISC %</th>
+            <th className={clsx(TH_BASE, "text-center")}>
+              BILLING PRICE
+              <br />
+              <span className="text-[9px] normal-case">(INCL. TAX)</span>
+            </th>
+            <th className={clsx(TH_BASE, "text-center")}>MYTVS COINS</th>
+            <th className={clsx(TH_BASE, "text-center")}>WARRANTY</th>
+            <th className={clsx(TH_BASE, "text-center")}>ETD</th>
+            <th className={clsx(TH_BASE, "text-center")}>QUANTITY</th>
+          </tr>
+        </thead>
+        <tbody>
+          {parts.map((p) => {
+            const cartRow = cartLookup.get(up(p.partNumber));
+            return (
+              <PartRow
+                key={p.partNumber}
+                p={p}
+                qty={cartRow?.qty}
+                cartId={cartRow?.cartId}
+                onAdd={onAdd}
+                onQty={onQty}
+              />
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ExploreArea({
   mode,
   makes,
@@ -1086,31 +2018,38 @@ function ExploreArea({
   years,
   selectedCats,
   selectedSubs,
-  activeSubcategoryOptions,
+  categoryOptions = [],
+  activeSubcategoryOptions = [],
   onClearEdit,
   onEditSelection,
   sort,
   setSort,
-  partQuery,
-  setPartQuery,
+  searchInput,
+  setSearchInput,
+  onSearchSubmit,
   selectedBrands,
   setSelectedBrands,
+  brandOptions = [],
   totalParts,
   grouped,
   collapsedGroups,
   toggleGroup,
-  cart,
+  cartLookup,
   onAdd,
   onQty,
+  isLoadingParts,
+  page = 1,
+  pageSize = 20,
+  totalPartsCount = 0,
+  onPageChange,
+  onPageSizeChange,
 }) {
-  const catLabels = selectedCats
-    .map((v) => GLOBAL_CATEGORIES.find((c) => c.value === v)?.label)
-    .filter(Boolean);
-  const selectedSubLabels = selectedSubs
-    .map(
-      (value) => activeSubcategoryOptions.find((s) => s.value === value)?.label,
-    )
-    .filter(Boolean);
+  const catLabels = selectedCats.map(
+    (v) => categoryOptions.find((c) => c.value === v)?.label || v,
+  );
+  const selectedSubLabels = selectedSubs.map(
+    (v) => activeSubcategoryOptions.find((s) => s.value === v)?.label || v,
+  );
 
   return (
     <div className="p-5">
@@ -1118,29 +2057,19 @@ function ExploreArea({
       <div className="mb-3 flex flex-wrap gap-2">
         {makes.length > 0 && <BreadChip>{makes.join(", ")}</BreadChip>}
         {models.length > 0 && (
-          <BreadChip>{models.map((m) => m.toUpperCase()).join(", ")}</BreadChip>
+          <BreadChip>{models.map((m) => String(m).toUpperCase()).join(", ")}</BreadChip>
         )}
         {mode === "vehicle" && !skipGeneration && generation && (
-          <BreadChip>
-            {
-              (
-                GENERATIONS.find((g) => g.value === generation)?.label ?? ""
-              ).split(" (")[0]
-            }
-          </BreadChip>
+          <BreadChip>{String(generation).split(" (")[0]}</BreadChip>
         )}
         {variants.length > 0 && <BreadChip>{variants.join(", ")}</BreadChip>}
         {fuels.length > 0 && <BreadChip>{fuels.join(", ")}</BreadChip>}
         {years.length > 0 && <BreadChip>{years.join(", ")}</BreadChip>}
         {catLabels.length > 0 && (
-          <BreadChip>
-            {catLabels.map((c) => c.toUpperCase()).join(", ")}
-          </BreadChip>
+          <BreadChip>{catLabels.map((c) => c.toUpperCase()).join(", ")}</BreadChip>
         )}
         {selectedSubLabels.length > 0 && (
-          <BreadChip>
-            {selectedSubLabels.map((c) => c.toUpperCase()).join(", ")}
-          </BreadChip>
+          <BreadChip>{selectedSubLabels.map((c) => c.toUpperCase()).join(", ")}</BreadChip>
         )}
       </div>
 
@@ -1158,8 +2087,7 @@ function ExploreArea({
       <div className="mb-4 grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1fr_2fr_auto]">
         <FilterField label="Brand">
           <MultiSelect
-            label="Brand"
-            options={BRAND_SELECT_OPTIONS}
+            options={brandOptions}
             value={selectedBrands}
             onChange={setSelectedBrands}
             placeholder="All Brands"
@@ -1171,33 +2099,47 @@ function ExploreArea({
             value={sort}
             onChange={(e) => setSort(e.target.value)}
             variant="underline"
-            options={[
-              { value: "default", label: "Default" },
-              { value: "price-asc", label: "Price: Low to High" },
-              { value: "price-desc", label: "Price: High to Low" },
-              { value: "disc-desc", label: "Discount: High to Low" },
-            ]}
+            options={SORT_OPTIONS}
           />
         </FilterField>
 
-        {/* <FilterField label=" "> */}
-        <Input
-          type="search"
-          value={partQuery}
-          onChange={(e) => setPartQuery(e.target.value)}
-          placeholder="Search Part"
-        />
-        {/* </FilterField> */}
+        <div className="relative">
+          <Input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onSearchSubmit();
+              }
+            }}
+            placeholder="Search Part (min. 4 chars)"
+            className="pr-10"
+          />
+          <button
+            type="button"
+            onClick={() => onSearchSubmit()}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-ink-400 hover:text-accent-600 transition-colors cursor-pointer"
+            title="Search Part (min. 4 characters)"
+          >
+            <Search className="h-4 w-4" />
+          </button>
+        </div>
 
         <div className="flex h-11 items-center">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-white px-2 py-1 text-sm font-semibold text-ink-700">
-            <PackageOpenIcon className="h-4 w-4 text-accent-500" />
+            <Icons.PackageOpen className="h-4 w-4 text-accent-500" />
             <span className="font-bold">{totalParts}</span> Parts
           </span>
         </div>
       </div>
 
-      {grouped.length === 0 ? (
+      {isLoadingParts ? (
+        <div className="flex flex-col items-center justify-center py-20 space-y-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-accent-500 border-t-transparent" />
+          <p className="text-sm font-medium text-ink-600">Loading parts list...</p>
+        </div>
+      ) : grouped.length === 0 ? (
         <div className="rounded-xl border border-dashed border-ink-200 py-16 text-center text-sm text-ink-500">
           No parts match the current filters.
         </div>
@@ -1223,16 +2165,13 @@ function ExploreArea({
                     )}
                     {g.aggLabel}
                   </span>
-                  <span className="text-xs text-brand-700">
-                    {g.count} parts
-                  </span>
+                  <span className="text-xs text-brand-700">{g.count} parts</span>
                 </button>
                 {aggOpen && (
                   <div className="space-y-2 bg-white p-3">
                     {g.subs.map((s) => {
-                      const subOpen = !collapsedGroups.has(
-                        `sub:${g.agg}:${s.sub}`,
-                      );
+                      const subKey = `sub:${g.agg}:${s.sub}`;
+                      const subOpen = !collapsedGroups.has(subKey);
                       return (
                         <div
                           key={s.sub}
@@ -1240,7 +2179,7 @@ function ExploreArea({
                         >
                           <button
                             type="button"
-                            onClick={() => toggleGroup(`sub:${g.agg}:${s.sub}`)}
+                            onClick={() => toggleGroup(subKey)}
                             className="flex w-full cursor-pointer items-center justify-between bg-white px-4 py-2.5"
                           >
                             <span className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-ink-700">
@@ -1256,119 +2195,12 @@ function ExploreArea({
                             </span>
                           </button>
                           {subOpen && (
-                            <div className="overflow-x-auto ">
-                              <table className="w-full min-w-[960px] text-sm">
-                                <thead>
-                                  <tr className="border-t border-ink-100 bg-ink-50/60 text-left text-[11px] font-medium text-ink-500">
-                                    <th className="px-4 py-2.5">PART NAME</th>
-                                    <th className="px-4 py-2.5">BRAND NAME</th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      MRP
-                                      <br />
-                                      <span className="text-[9px] normal-case">
-                                        (INCL. TAX)
-                                      </span>
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      DISC %
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      BILLING PRICE
-                                      <br />
-                                      <span className="text-[9px] normal-case">
-                                        (INCL. TAX)
-                                      </span>
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      MYTVS COINS
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      WARRANTY
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      ETD
-                                    </th>
-                                    <th className="px-4 py-2.5 text-center">
-                                      QUANTITY
-                                    </th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {s.parts.map((p) => {
-                                    const cartRow = cart.find(
-                                      (c) => c.cartId === p.partNumber,
-                                    );
-                                    const discPct =
-                                      p.mrp && p.saleRate < p.mrp
-                                        ? Math.round(
-                                            ((p.mrp - p.saleRate) / p.mrp) *
-                                              100 *
-                                              100,
-                                          ) / 100
-                                        : 0;
-                                    const priceIncl = Math.round(
-                                      p.saleRate * (1 + p.taxpercent / 100),
-                                    );
-                                    const mrpIncl = Math.round(p.mrp);
-                                    return (
-                                      <tr
-                                        key={p.partNumber}
-                                        className="border-t border-ink-100"
-                                      >
-                                        <td className="px-4 py-3">
-                                          <p className="font-semibold text-ink-800">
-                                            {p.itemDescription}
-                                          </p>
-                                          <p className="mt-0.5 text-xs text-brand-700">
-                                            {p.partNumber}
-                                          </p>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                          <span className="inline-block rounded bg-brand-600 px-2.5 py-1 text-[11px] font-semibold text-white">
-                                            {p.brandName}
-                                          </span>
-                                        </td>
-                                        <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{mrpIncl.toLocaleString("en-IN")}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-600">
-                                          {discPct > 0 ? `${discPct}%` : "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center font-semibold text-ink-800">
-                                          ₹{priceIncl.toLocaleString("en-IN")}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.points || "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.warrantyDays
-                                            ? `${p.warrantyDays}d`
-                                            : "—"}
-                                        </td>
-                                        <td className="px-4 py-3 text-center text-ink-500">
-                                          {p.eda != null ? `${p.eda}d` : "—"}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                          <div className="flex justify-center">
-                                            <CatalogueQtyStepper
-                                              value={cartRow?.qty ?? 0}
-                                              onChange={(v) =>
-                                                cartRow
-                                                  ? onQty(cartRow.cartId, v)
-                                                  : v > 0
-                                                    ? onAdd(p)
-                                                    : null
-                                              }
-                                              min={0}
-                                            />
-                                          </div>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
+                            <PartsTable
+                              parts={s.parts}
+                              cartLookup={cartLookup}
+                              onAdd={onAdd}
+                              onQty={onQty}
+                            />
                           )}
                         </div>
                       );
@@ -1380,6 +2212,19 @@ function ExploreArea({
           })}
         </div>
       )}
+
+      {totalPartsCount > 0 && (
+        <div className="mt-4 border-t border-ink-100 pt-3">
+          <Pagination
+            page={page}
+            totalPages={Math.ceil(totalPartsCount / pageSize) || 1}
+            totalItems={totalPartsCount}
+            pageSize={pageSize}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -1389,7 +2234,7 @@ function ExploreArea({
 function FilterField({ label, children }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-medium text-brand-700">{label}</p>
+      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-500">{label}</p>
       {children}
     </div>
   );
@@ -1401,16 +2246,4 @@ function BreadChip({ children }) {
       {children}
     </span>
   );
-}
-
-/** Bump qty + recompute money on a cart row. */
-function bumpQty(row, delta, taxPercent) {
-  const qty = Math.max(1, row.qty + delta);
-  const tax = row.saleRate * ((taxPercent ?? 18) / 100) * qty;
-  return {
-    ...row,
-    qty,
-    tax: +tax.toFixed(2),
-    totalAmount: +(row.saleRate * qty + tax).toFixed(2),
-  };
 }
