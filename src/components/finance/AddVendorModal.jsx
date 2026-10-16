@@ -20,7 +20,13 @@ const EMPTY_VENDOR = {
   address: "",
 };
 
-export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
+export default function AddVendorModal({
+  isOpen,
+  onClose,
+  onSubmit,
+  createVendorFn,
+  title,
+}) {
   const [form, setForm] = useState(EMPTY_VENDOR);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -76,7 +82,8 @@ export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
         formData.append("document", selectedFile);
       }
 
-      const res = await expenseApi.createVendor(formData);
+      const apiCall = createVendorFn || expenseApi.createVendor;
+      const res = await apiCall(formData);
       showToast.success(res?.message || `Vendor "${form.name}" saved.`);
 
       if (onSubmit) {
@@ -100,7 +107,7 @@ export default function AddVendorModal({ isOpen, onClose, onSubmit }) {
           <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent-50 text-accent-600">
             <Building2 className="h-5 w-5" />
           </span>
-          <span>Add New Vendor</span>
+          <span>{title || "Add New Vendor"}</span>
         </span>
       }
       footer={

@@ -25,6 +25,7 @@ const EMPTY_FORM = {
   invoiceNo: "",
   date: "",
   paymentMode: "",
+  referenceNo: "",
   exclGst: 0,
   gst: 0,
   inclGst: 0,
@@ -120,7 +121,7 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit, vendors = [
         inclGst: incl,
         paid,
         pending: Math.max(0, incl - paid),
-        status: form.status || (paid >= incl && incl > 0 ? "Paid" : "Pending"),
+        status: form.status || (paid >= incl && incl > 0 ? "Paid" : (paid > 0 ? "Partially Paid" : "Pending")),
       };
 
       const res = await expenseApi.createExpense(payload);
@@ -219,11 +220,11 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit, vendors = [
             onChange={(e) => update("date", e.target.value)}
           />
           <Select
-            label="Payment Mode"
-            value={form.paymentMode}
-            onChange={(e) => update("paymentMode", e.target.value)}
-            options={PAYMENT_MODE_OPTIONS}
-            placeholder="Select mode"
+            label="Status"
+            value={form.status}
+            onChange={(e) => update("status", e.target.value)}
+            options={EXPENSE_STATUS_OPTIONS}
+            placeholder="Auto (derived)"
           />
         </div>
 
@@ -251,21 +252,33 @@ export default function AddExpenseModal({ isOpen, onClose, onSubmit, vendors = [
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Input
-            type="number"
-            min={0}
-            label="Amount Paid (₹)"
-            value={form.paid}
-            onChange={(e) => update("paid", e.target.value)}
-          />
-          <Select
-            label="Status"
-            value={form.status}
-            onChange={(e) => update("status", e.target.value)}
-            options={EXPENSE_STATUS_OPTIONS}
-            placeholder="Auto (derived)"
-          />
+        <div className="rounded-lg border border-ink-200/80 bg-ink-50/40 p-3 space-y-3">
+          <p className="text-xs font-semibold text-ink-700 uppercase tracking-wider">
+            Initial Payment (Optional)
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <Input
+              type="number"
+              min={0}
+              label="Amount Paid (₹)"
+              value={form.paid}
+              onChange={(e) => update("paid", e.target.value)}
+              placeholder="0.00"
+            />
+            <Select
+              label="Payment Mode"
+              value={form.paymentMode}
+              onChange={(e) => update("paymentMode", e.target.value)}
+              options={PAYMENT_MODE_OPTIONS}
+              placeholder="Select mode"
+            />
+            <Input
+              label="Reference / UTR / Cheque No"
+              value={form.referenceNo}
+              onChange={(e) => update("referenceNo", e.target.value)}
+              placeholder="e.g. UTR / CHQ / Txn ID"
+            />
+          </div>
         </div>
 
         <div>

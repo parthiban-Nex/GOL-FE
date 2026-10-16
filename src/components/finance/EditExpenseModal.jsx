@@ -66,7 +66,9 @@ export default function EditExpenseModal({
       const initialStatus =
         inclGstVal > 0 && initialTotalPaid >= inclGstVal
           ? "Paid"
-          : expense.status || "Pending";
+          : initialTotalPaid > 0
+          ? "Partially Paid"
+          : "Pending";
 
       setForm({
         id: expense.id || null,
@@ -151,7 +153,7 @@ export default function EditExpenseModal({
           field === "paid" ? Number(value) || 0 : Number(next.paid) || 0;
         const totalPaid = originalPaid + payNow;
         const incl = Number(next.inclGst) || 0;
-        next.status = incl > 0 && totalPaid >= incl ? "Paid" : "Pending";
+        next.status = incl > 0 && totalPaid >= incl ? "Paid" : (totalPaid > 0 ? "Partially Paid" : "Pending");
       }
       return next;
     });
@@ -176,6 +178,8 @@ export default function EditExpenseModal({
       const status =
         incl > 0 && paid >= incl
           ? "Paid"
+          : paid > 0
+          ? "Partially Paid"
           : form.status || "Pending";
 
       const payload = {

@@ -48,6 +48,12 @@ export const expenseApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
+  addPayment(payload) {
+    return axiosClient.post("/expense/addPayment", payload);
+  },
+  getExpensePayments(expenseId) {
+    return axiosClient.post("/expense/getExpensePayments", { expenseId });
+  },
   exportCsv(params = {}) {
     return axiosClient.post("/expense/listExpenses", params);
   },
