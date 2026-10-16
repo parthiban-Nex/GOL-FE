@@ -95,6 +95,9 @@ const DynamicModulePage = lazy(
 const Unauthorized = lazy(() => import("@/pages/errors/Unauthorized"));
 const NotFound = lazy(() => import("@/pages/errors/NotFound"));
 const Welcome = lazy(() => import("@/pages/welcome/Welcome"));
+const PurchaseReturnReport = lazy(
+  () => import("@/pages/reports/PurchaseReturn"),
+);
 export const publicRoutes = [{ path: ROUTES.LOGIN, element: Login }];
 
 export const protectedRoutes = [
@@ -159,6 +162,7 @@ export const protectedRoutes = [
   { path: ROUTES.MASTERS_VARIANT, element: Variant },
   { path: ROUTES.LOGS_USER, element: UserLog },
   { path: ROUTES.LOGS_AUDIT, element: AuditLog },
+  { path: ROUTES.REPORTS_PURCHASE_RETURN, element: PurchaseReturnReport },
 ];
 /** Reachable regardless of auth state. */
 export const utilityRoutes = {

@@ -16,6 +16,11 @@ export const purchaseReturnApi = {
   getGrnsForPurchaseReturn(payload) {
     return axiosClient.post("/parts/GetGRNForPurchaseReturn", payload);
   },
+  getPurchaseReturnReport(payload) {
+    return axiosClient.post("/parts/GetPurchaseReturnReport", payload,{
+    responseType: "blob",
+  });
+  },
 
 }
 
