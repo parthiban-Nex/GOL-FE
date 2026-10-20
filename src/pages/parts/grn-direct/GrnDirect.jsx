@@ -107,7 +107,6 @@ const [isUpdating, setIsUpdating] = useState(false);
     const qty = num(it.receivedQty);
     const cost = num(it.cost);
     const total = num(it.totalAmount);
-    const gst = total - cost * qty;
 
     return {
       item_id: it.itemId ?? 0,
@@ -115,14 +114,14 @@ const [isUpdating, setIsUpdating] = useState(false);
       item_description: it.description,
       sup_invoice_quantity: num(it.supInvQty),
       quantity: qty,
-      rate: cost,
+      rate: num(it.cost),
       cost,
       mrp: num(it.mrp),
       discount: num(it.discount),
       binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
-      cgst: gst / 2,
-      sgst: gst / 2,
-      igst: 0,
+      cgst:it.cgst,
+      sgst:it.sgst,
+      igst: it.igst,
       total,
       binid: it.binId ?? 0,
     };
@@ -624,7 +623,6 @@ Authorized Signature
   const qty = num(it.receivedQty);
   const cost = num(it.cost);
   const total = num(it.totalAmount);
-  const gst = total - cost * qty;
   return {
     item_id: it.itemId ?? 0,
     item_code: it.partNo,
@@ -636,9 +634,9 @@ Authorized Signature
     mrp: num(it.mrp),
     discount: num(it.discount),
     binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
-    cgst: gst / 2,
-    sgst: gst / 2,
-    igst: 0,
+    cgst: it.cgst,
+    sgst: it.sgst,
+    igst: it.igst,
     total,
     binid: it.binId ?? 0,
   };

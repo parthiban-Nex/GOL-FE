@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
-import { Autocomplete, TextField, CircularProgress } from "@mui/material";
+import { Loader2 } from "lucide-react";
+import clsx from "clsx";
 import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
+import AsyncSearchInput from "@/components/parts/AsyncSearchInput";
 import { purchaseReturnApi } from "@/services";
+import { formatINR } from "@/utils/estimateMath";
 
 const GRN_SEARCH_MIN_CHARS = 5; // same threshold as the old screen
+
+const emptyVendor = {
+  vendorCode: "",
+  vendorName: "",
+  vendorId: null,
+  grnId: null,
+};
 
 // Same formula as the old table: cost * return qty.
 function calcLineTotal(row) {
@@ -20,77 +30,65 @@ export default function CreatePurchaseReturnModal({
   onSubmit,
   isSubmitting,
 }) {
-  // GRN autocomplete
-  const [grnOptions, setGrnOptions] = useState([]);
+  // GRN search
   const [selectedGrn, setSelectedGrn] = useState(null);
   const [grnInput, setGrnInput] = useState("");
-  const [isGrnLoading, setIsGrnLoading] = useState(false);
 
   // Full GRN details
   const [rows, setRows] = useState([]); // each row: API row + returnQty
-  const [vendor, setVendor] = useState({
-    vendorCode: "",
-    vendorName: "",
-    vendorId: null,
-    grnId: null,
-  });
+  const [vendor, setVendor] = useState(emptyVendor);
   const [isDetailsLoading, setIsDetailsLoading] = useState(false);
 
   const [rowErrors, setRowErrors] = useState({}); // { [row.id]: message }
-  const [formError, setFormError] = useState("");
+  const [errors, setErrors] = useState({}); // { grn, items }
 
   // Reset whenever the modal opens.
   useEffect(() => {
     if (isOpen) {
-      setGrnOptions([]);
       setSelectedGrn(null);
       setGrnInput("");
       setRows([]);
-      setVendor({ vendorCode: "", vendorName: "", vendorId: null, grnId: null });
+      setVendor(emptyVendor);
       setRowErrors({});
-      setFormError("");
+      setErrors({});
     }
   }, [isOpen]);
 
-  // Search GRNs as the user types (debounced).
-  useEffect(() => {
-    const searchKey = grnInput.trim();
-    if (searchKey.length < GRN_SEARCH_MIN_CHARS) return;
-    if (searchKey === selectedGrn?.grn_no) return;
-
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setIsGrnLoading(true);
-      try {
-        const response = await purchaseReturnApi.listGrns({
-          searchKey,
-          offset: 0,
-          limit: 100,
-        });
-        if (!cancelled && response?.requestSuccessful) {
-          setGrnOptions(response?.data ?? []);
-        }
-      } catch (err) {
-        console.error("Error searching GRNs", err);
-      } finally {
-        if (!cancelled) setIsGrnLoading(false);
-      }
-    }, 500);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [grnInput, selectedGrn]);
-
   if (!isOpen) return null;
 
-  async function handleGrnSelect(option) {
+  // ---- GRN ----
+  async function searchGrns(query) {
+    const searchKey = query.trim();
+    if (searchKey.length < GRN_SEARCH_MIN_CHARS) return [];
+    const res = await purchaseReturnApi.listGrns({
+      searchKey,
+      offset: 0,
+      limit: 100,
+    });
+    if (!res?.requestSuccessful) return [];
+    return (res?.data ?? []).map((g) => ({
+      key: g.id,
+      label: g.grn_no,
+      sub: g.invoice_number,
+      data: g,
+    }));
+  }
+
+  function resetGrnDetails() {
+    setSelectedGrn(null);
+    setRows([]);
+    setVendor(emptyVendor);
+    setRowErrors({});
+    setErrors({});
+  }
+
+  async function selectGrn(o) {
+    const option = o.data;
+    setGrnInput(option.grn_no);
     setSelectedGrn(option);
     setRows([]);
     setRowErrors({});
-    setFormError("");
-    if (!option) return;
+    setErrors({});
 
     setIsDetailsLoading(true);
     try {
@@ -106,16 +104,17 @@ export default function CreatePurchaseReturnModal({
           grnId: res.grnid ?? option.id,
         });
       } else {
-        setFormError("Could not load GRN details");
+        setErrors({ grn: "Could not load GRN details" });
       }
     } catch (err) {
       console.error("Error fetching GRN details", err);
-      setFormError("Could not load GRN details");
+      setErrors({ grn: "Could not load GRN details" });
     } finally {
       setIsDetailsLoading(false);
     }
   }
 
+  // ---- return qty ----
   function handleQtyChange(rowId, value) {
     // Up to 2 decimals, no negatives / exponent.
     if (value !== "" && !/^\d*\.?\d{0,2}$/.test(value)) return;
@@ -132,7 +131,7 @@ export default function CreatePurchaseReturnModal({
     }
 
     setRowErrors((prev) => ({ ...prev, [rowId]: null }));
-    setFormError("");
+    setErrors((prev) => (prev.items ? { ...prev, items: null } : prev));
     setRows((prev) =>
       prev.map((r) => (r.id === rowId ? { ...r, returnQty: value } : r)),
     );
@@ -140,19 +139,22 @@ export default function CreatePurchaseReturnModal({
 
   const grandTotal = rows.reduce((s, r) => s + Number(calcLineTotal(r)), 0);
 
+  // ---- submit ----
   function handleSubmit(e) {
     e.preventDefault();
 
-    if (!selectedGrn) {
-      setFormError("Select a GRN");
-      return;
+    const newErrors = {};
+    if (!selectedGrn) newErrors.grn = "Select a GRN from the list";
+    else if (!rows.some((r) => Number(r.returnQty) > 0)) {
+      newErrors.items = "Enter a return quantity for at least one part";
     }
-    const items = rows.filter((r) => Number(r.returnQty) > 0);
-    if (items.length === 0) {
-      setFormError("Enter a return quantity for at least one part");
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
     }
 
+    const items = rows.filter((r) => Number(r.returnQty) > 0);
     onSubmit?.({
       grnNo: selectedGrn.grn_no,
       grnId: vendor.grnId,
@@ -175,7 +177,7 @@ export default function CreatePurchaseReturnModal({
       size="xl"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={isSubmitting}>
             Cancel
           </Button>
           <Button
@@ -192,125 +194,124 @@ export default function CreatePurchaseReturnModal({
       <form
         id="create-purchase-return-form"
         onSubmit={handleSubmit}
-        className="space-y-5"
+        noValidate
+        className="space-y-6"
       >
-        <div className="max-w-xs">
-          <Input
-            label="Grand Total"
-            variant="underline"
-            value={Math.round(grandTotal)}
-            readOnly
-            className="text-base font-bold"
-          />
-        </div>
-
-        <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-3">
-          {/* GRN search */}
-          <Autocomplete
-            options={grnOptions}
-            value={selectedGrn}
-            onChange={(_, option) => handleGrnSelect(option)}
-            inputValue={grnInput}
-            onInputChange={(_, value) => setGrnInput(value)}
-            getOptionLabel={(option) => option?.grn_no ?? ""}
-            isOptionEqualToValue={(option, val) => option.id === val.id}
-            filterOptions={(x) => x} // filtering is done by the API
-            loading={isGrnLoading}
-            noOptionsText={
-              grnInput.trim().length < GRN_SEARCH_MIN_CHARS
-                ? `Type ${GRN_SEARCH_MIN_CHARS}+ characters`
-                : "No GRNs found"
-            }
-            renderOption={(props, option) => {
-              // eslint-disable-next-line no-unused-vars
-              const { key, ...rest } = props;
-              return (
-                <li key={option.id} {...rest}>
-                  {option.grn_no} / {option.invoice_number}
-                </li>
-              );
-            }}
-            componentsProps={{ popper: { style: { zIndex: 9999 } } }}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="GRN No or Invoice Number"
-                required
-                variant="standard"
-                fullWidth
-                InputProps={{
-                  ...params.InputProps,
-                  endAdornment: (
-                    <>
-                      {isGrnLoading ? (
-                        <CircularProgress color="inherit" size={16} />
-                      ) : null}
-                    </>
-                  ),
-                }}
-              />
+        {/* ---------- Header ---------- */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-ink-700">
+              GRN No or Invoice Number <span className="text-red-500">*</span>
+            </label>
+            <AsyncSearchInput
+              value={grnInput}
+              onInputChange={(v) => {
+                setGrnInput(v);
+                // Typing again means a different GRN.
+                if (selectedGrn) resetGrnDetails();
+              }}
+              fetchOptions={searchGrns}
+              onSelect={selectGrn}
+              placeholder={`Type ${GRN_SEARCH_MIN_CHARS}+ characters`}
+              error={errors.grn}
+              inputClassName="h-10 text-sm"
+            />
+            {errors.grn && (
+              <p className="mt-1 text-xs text-danger-500">{errors.grn}</p>
             )}
-          />
-
+          </div>
           <Input
             label="Vendor Code"
-            variant="underline"
             value={vendor.vendorCode}
             readOnly
+            placeholder="Filled from GRN"
+            className="bg-ink-50"
           />
           <Input
             label="Vendor Name"
-            variant="underline"
             value={vendor.vendorName}
             readOnly
+            placeholder="Filled from GRN"
+            className="bg-ink-50"
+          />
+          <Input
+            label="Grand Total"
+            value={Math.round(grandTotal)}
+            readOnly
+            className="bg-ink-50 font-bold"
           />
         </div>
 
-        {isDetailsLoading && (
-          <p className="text-xs text-ink-500">Loading GRN details...</p>
-        )}
-
-        {rows.length > 0 && (
-          <div className="rounded-xl border border-ink-100 bg-white p-3 shadow-xs">
-            {formError && (
-              <p className="mb-2 text-xs text-danger-500">{formError}</p>
+        {/* ---------- Parts ---------- */}
+        <div className="space-y-3 pt-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-ink-900">Parts details</h3>
+            {isDetailsLoading && (
+              <span className="flex items-center gap-1.5 text-xs text-ink-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading GRN details...
+              </span>
             )}
-            <div className="max-h-[380px] overflow-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="sticky top-0 bg-white">
-                  <tr className="border-b border-ink-100 text-ink-500">
-                    <th className="pb-2 font-semibold">Parts Code</th>
-                    <th className="pb-2 font-semibold">Description</th>
-                    <th className="pb-2 text-center font-semibold">
-                      Available Qty
-                    </th>
-                    <th className="pb-2 font-semibold">Return Qty</th>
-                    <th className="pb-2 text-right font-semibold">Cost</th>
-                    <th className="pb-2 text-center font-semibold">Discount</th>
-                    <th className="pb-2 text-center font-semibold">CGST</th>
-                    <th className="pb-2 text-center font-semibold">SGST</th>
-                    <th className="pb-2 text-center font-semibold">IGST</th>
-                    <th className="pb-2 text-right font-semibold text-brand-700">
-                      Total Amount
-                    </th>
+          </div>
+          {!selectedGrn && (
+            <p className="text-xs text-ink-500">
+              Select a GRN first - its parts will be listed here.
+            </p>
+          )}
+          {errors.items && (
+            <p className="text-xs text-danger-500">{errors.items}</p>
+          )}
+
+          <div className="overflow-x-auto rounded-xl border border-ink-200 bg-white">
+            <table className="w-full min-w-[1000px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-ink-200 bg-[#F8F9FF] text-[11px] font-bold uppercase tracking-wider text-ink-500">
+                  <th className="px-2.5 py-2.5">Parts Code</th>
+                  <th className="min-w-[160px] px-2.5 py-2.5">Description</th>
+                  <th className="w-24 px-2.5 py-2.5 text-center">
+                    Available Qty
+                  </th>
+                  <th className="w-28 px-2.5 py-2.5 text-center">Return Qty</th>
+                  <th className="w-24 px-2.5 py-2.5 text-right">Cost</th>
+                  <th className="w-20 px-2.5 py-2.5 text-center">Discount</th>
+                  <th className="w-16 px-2.5 py-2.5 text-center">CGST</th>
+                  <th className="w-16 px-2.5 py-2.5 text-center">SGST</th>
+                  <th className="w-16 px-2.5 py-2.5 text-center">IGST</th>
+                  <th className="px-2.5 py-2.5 text-right">Total Amt</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-100">
+                {rows.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={10}
+                      className="px-2.5 py-6 text-center text-ink-400"
+                    >
+                      No parts to show
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-50">
-                  {rows.map((row) => {
+                ) : (
+                  rows.map((row) => {
                     const available = Number(row["Available Qty"]) || 0;
                     const disabled = available <= 0;
+                    const error = rowErrors[row.id];
                     return (
-                      <tr key={row.id} className="hover:bg-ink-50/50">
-                        <td className="py-2.5 pr-2 font-medium text-brand-700">
+                      <tr
+                        key={row.id}
+                        className="align-top hover:bg-ink-50/50"
+                      >
+                        <td className="px-2.5 py-2 pt-3 font-medium text-brand-700">
                           {row["Parts Code"]}
                         </td>
-                        <td className="py-2.5 pr-2 font-medium text-ink-800">
-                          {row.Description}
+                        <td className="px-2.5 py-2 pt-3 text-ink-800">
+                          <span className="line-clamp-2">
+                            {row.Description || "-"}
+                          </span>
                         </td>
-                        <td className="py-2.5 pr-2 text-center text-ink-700">
+                        <td className="px-2.5 py-2 pt-3 text-center text-ink-700">
                           {available}
                         </td>
-                        <td className="py-2.5 pr-2">
+                        <td className="px-2 py-2">
                           <input
                             type="number"
                             min="0"
@@ -319,6 +320,7 @@ export default function CreatePurchaseReturnModal({
                             disabled={disabled}
                             value={row.returnQty}
                             placeholder="Qty"
+                            aria-label="Return quantity"
                             onKeyDown={(e) => {
                               if (["e", "E", "-", "+"].includes(e.key)) {
                                 e.preventDefault();
@@ -327,51 +329,57 @@ export default function CreatePurchaseReturnModal({
                             onChange={(e) =>
                               handleQtyChange(row.id, e.target.value)
                             }
-                            className={`w-20 border-b bg-transparent pb-0.5 text-center text-ink-800 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50 ${
-                              rowErrors[row.id]
+                            className={clsx(
+                              "w-full rounded border px-2 py-1 text-center text-xs text-ink-800 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50",
+                              error
                                 ? "border-danger-500"
-                                : "border-ink-200 focus:border-brand-600"
-                            }`}
+                                : "border-ink-200 focus:border-brand-600",
+                            )}
                           />
-                          {rowErrors[row.id] && (
-                            <p className="mt-0.5 max-w-[120px] text-[10px] leading-tight text-danger-500">
-                              {rowErrors[row.id]}
+                          {error && (
+                            <p className="mt-0.5 text-[10px] leading-tight text-danger-500">
+                              {error}
                             </p>
                           )}
                         </td>
-                        <td className="py-2.5 pr-2 text-right text-ink-700">
+                        <td className="px-2.5 py-2 pt-3 text-right text-ink-700">
                           {row.Cost}
                         </td>
-                        <td className="py-2.5 pr-2 text-center text-ink-600">
+                        <td className="px-2.5 py-2 pt-3 text-center text-ink-700">
                           {row.Discount ?? 0}
                         </td>
-                        <td className="py-2.5 pr-2 text-center text-ink-600">
+                        <td className="px-2.5 py-2 pt-3 text-center text-ink-700">
                           {row.CGST}
                         </td>
-                        <td className="py-2.5 pr-2 text-center text-ink-600">
+                        <td className="px-2.5 py-2 pt-3 text-center text-ink-700">
                           {row.SGST}
                         </td>
-                        <td className="py-2.5 pr-2 text-center text-ink-600">
+                        <td className="px-2.5 py-2 pt-3 text-center text-ink-700">
                           {row.IGST}
                         </td>
-                        <td className="py-2.5 text-right font-bold text-ink-900">
-                          ₹{" "}
-                          {Number(calcLineTotal(row)).toLocaleString("en-IN", {
-                            minimumFractionDigits: 2,
-                          })}
+                        <td className="px-2.5 py-2 pt-3 text-right font-bold text-ink-900">
+                          {formatINR(Number(calcLineTotal(row)) || 0)}
                         </td>
                       </tr>
                     );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  })
+                )}
+              </tbody>
+              {rows.length > 0 && (
+                <tfoot>
+                  <tr className="border-t border-ink-200 bg-[#F8F9FF] text-right text-xs font-bold text-ink-900">
+                    <td className="px-2.5 py-2.5" colSpan={9}>
+                      Grand Total
+                    </td>
+                    <td className="px-2.5 py-2.5 text-right">
+                      {formatINR(grandTotal)}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
           </div>
-        )}
-
-        {rows.length === 0 && formError && (
-          <p className="text-xs text-danger-500">{formError}</p>
-        )}
+        </div>
       </form>
     </Modal>
   );
