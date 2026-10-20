@@ -4,7 +4,7 @@ import { ConfirmModal } from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import PartsCategorySelector from "@/components/marketing/PartsCategorySelector";
 import CampaignTemplateCard from "@/components/marketing/CampaignTemplateCard";
-import CreateTemplateModal from "@/components/marketing/CreateTemplateModal";
+import CreatePartsOrderTemplateModal from "@/components/marketing/CreatePartsOrderTemplateModal";
 import { usePagePermissions } from "@/hooks/usePagePermissions";
 import { showToast } from "@/utils/toast";
 
@@ -181,7 +181,7 @@ export default function CampaignsPartsOrder() {
         </div>
 
         {/* Create / Edit Template Panel Anchored Inside Section */}
-        <CreateTemplateModal
+        <CreatePartsOrderTemplateModal
           isOpen={isModalOpen}
           onClose={() => setIsModalOpen(false)}
           onSave={handleSaveTemplate}

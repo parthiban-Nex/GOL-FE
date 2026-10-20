@@ -6,7 +6,7 @@ function readEnv(key, fallback = undefined) {
 }
 
 export const env = {
-  apiBaseUrl: readEnv("VITE_API_BASE_URL", "http://localhost:7878/api"),
+  apiBaseUrl: readEnv("VITE_API_BASE_URL", "http://localhost:7001/api"),
   appName: readEnv("VITE_APP_NAME", "myTVS GarageOne Lite"),
   apiTimeout: Number(readEnv("VITE_API_TIMEOUT", "15000")),
   isDev: import.meta.env.DEV,
