@@ -22,9 +22,9 @@ import AddGrnModal from "./AddGrnModal";
 import AddBulkCsvModal from "./AddBulkCsvModal";
 import ViewGrnModal from "@/components/parts/ViewGrnModal";
 import GrnDirectFilterModal from "@/components/parts/GrnDirectFilterModal";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 import jsPDF from "jspdf";
-import mytvslogo from "../../../assets/images/tvslogo.png"
+import {tvslogo} from "@/assets/images"
 import EditGrnModal from "./EditGrnModal";
 
 const SEARCH_DEBOUNCE_MS = 400;
@@ -101,72 +101,76 @@ const [isUpdating, setIsUpdating] = useState(false);
     loadData();
   }, [loadData]);
 
-  async function handleCreateGrn({ items, ...form }) {
-    const grnparts = items.map((it) => {
-      const qty = num(it.receivedQty);
-      const cost = num(it.cost);
-      const total = num(it.totalAmount);
-      const gst = total - cost * qty;
+ async function handleCreateGrn({ items, invoicePdf, ...form }) {
+  console.log(invoicePdf,"pdffff")
+  const grnparts = items.map((it) => {
+    const qty = num(it.receivedQty);
+    const cost = num(it.cost);
+    const total = num(it.totalAmount);
 
-      return {
-        item_id: it.itemId ?? 0,
-        item_code: it.partNo,
-        item_description: it.description,
-        sup_invoice_quantity: num(it.supInvQty),
-        quantity: qty,
-        rate: cost,
-        cost,
-        mrp: num(it.mrp),
-        discount: num(it.discount),
-        binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
-        cgst: gst / 2,
-        sgst: gst / 2,
-        igst: 0,
-        total,
-        binid: it.binId ?? 0,
-      };
-    });
-
-    const payload = {
-      type: "DirectGrn", // change if Auto GRN uses a different type
-      grndata: {
-        document_type: form.grnName,
-        invoice_number: form.supplierInvoiceNumber,
-        invoice_date: form.invoiceDate,
-        vendor_id: form?.vendorId,
-        vendor_code: form?.vendorCode,
-        e_sugam_no: form.eSugamNumber,
-        lr_number: form.lrNumber,
-        lr_date: form.lrDate,
-        transport_name: form.transportName,
-        frieght_charges: num(form.freightCharges), // spelling matches your API
-        mis_charges: num(form.miscellaneousCharges),
-        status: 1,
-      },
-      grnparts,
-      bindata: items.flatMap((it) =>
-      (it.bins ?? []).map((b) => ({
-        binid: Number(b.binId),
-        quantity: num(b.quantity),
-        item_id: it.itemId,
-        item_code: it.partNo,
-      })),
-    ),
+    return {
+      item_id: it.itemId ?? 0,
+      item_code: it.partNo,
+      item_description: it.description,
+      sup_invoice_quantity: num(it.supInvQty),
+      quantity: qty,
+      rate: num(it.cost),
+      cost,
+      mrp: num(it.mrp),
+      discount: num(it.discount),
+      binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
+      cgst:it.cgst,
+      sgst:it.sgst,
+      igst: it.igst,
+      total,
+      binid: it.binId ?? 0,
     };
+  });
 
-    setIsSubmitting(true);
-    try {
-      await grnApi.quickAdd(payload);
-      showToast.success("Direct GRN created successfully");
-      setIsAddGrnOpen(false);
-      if (page === 1) loadData();
-      else setPage(1); // the effect reloads page 1
-    } catch (err) {
-      showToast.error(err.message || "Failed to create Direct GRN");
-    } finally {
-      setIsSubmitting(false);
-    }
+  const grndata = {
+    document_type: form.grnName,
+    invoice_number: form.supplierInvoiceNumber,
+    invoice_date: form.invoiceDate,
+    vendor_id: form?.vendorId,
+    vendor_code: form?.vendorCode,
+    e_sugam_no: form.eSugamNumber,
+    lr_number: form.lrNumber,
+    lr_date: form.lrDate,
+    transport_name: form.transportName,
+    frieght_charges: num(form.freightCharges), // spelling matches your API
+    mis_charges: num(form.miscellaneousCharges),
+    status: 1,
+  };
+
+  const bindata = items.flatMap((it) =>
+    (it.bins ?? []).map((b) => ({
+      binid: Number(b.binId),
+      quantity: num(b.quantity),
+      item_id: it.itemId,
+      item_code: it.partNo,
+    })),
+  );
+
+  const formData = new FormData();
+  formData.append("type", "DirectGrn");
+  formData.append("file", invoicePdf); // same key as the old Add GRN
+  formData.append("grndata", JSON.stringify(grndata));
+  formData.append("grnparts", JSON.stringify(grnparts));
+  formData.append("bindata", JSON.stringify(bindata));
+
+  setIsSubmitting(true);
+  try {
+    await grnApi.quickAdd(formData);
+    showToast.success("Direct GRN created successfully");
+    setIsAddGrnOpen(false);
+    if (page === 1) loadData();
+    else setPage(1);
+  } catch (err) {
+    showToast.error(err.message || "Failed to create Direct GRN");
+  } finally {
+    setIsSubmitting(false);
   }
+}
 
   async function handleUploadCsv(file) {
     setIsUploading(true);
@@ -344,7 +348,7 @@ const amountInWords = numberToWordsIndian(grndetails.pdf_total+grndetails.friegh
     </p>
     </div>
     <div style="flex:4;display: flex; justify-content: flex-end;margin-top:20px">
-    <img src="${mytvslogo}" style="width: 150px; height: 40px;"/>
+    <img src="${tvslogo}" style="width: 150px; height: 40px;"/>
     </div>
     </div>
     <div style="display:flex;flex-direction:row;line-height:0.5;margin-top:5px">
@@ -619,7 +623,6 @@ Authorized Signature
   const qty = num(it.receivedQty);
   const cost = num(it.cost);
   const total = num(it.totalAmount);
-  const gst = total - cost * qty;
   return {
     item_id: it.itemId ?? 0,
     item_code: it.partNo,
@@ -631,9 +634,9 @@ Authorized Signature
     mrp: num(it.mrp),
     discount: num(it.discount),
     binlocation: it.binLocation ? parseInt(it.binLocation, 10) : 0,
-    cgst: gst / 2,
-    sgst: gst / 2,
-    igst: 0,
+    cgst: it.cgst,
+    sgst: it.sgst,
+    igst: it.igst,
     total,
     binid: it.binId ?? 0,
   };

@@ -73,3 +73,5 @@ export { insuranceApi } from "@/services/api/insuranceApi";
 export { makeApi } from "@/services/api/makeApi";
 export { modelApi, MODEL_SEGMENTS } from "@/services/api/modelApi";
 export { variantApi } from "@/services/api/variantApi";
+export { grnApi } from "@/services/api/grnApi";
+export {purchaseReturnApi} from "@/services/api/purchaseReturnApi"

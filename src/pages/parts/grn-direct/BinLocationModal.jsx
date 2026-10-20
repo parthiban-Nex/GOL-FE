@@ -3,7 +3,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Autocomplete, TextField, CircularProgress } from "@mui/material";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import { grnApi } from "@/services/api/grnApi";
+import { grnApi } from "@/services";
 
 const round2 = (n) => Number((Number(n) || 0).toFixed(2));
 

@@ -8,11 +8,13 @@ export const grnApi = {
   },
   /** POST /grn/quickAddGrn — used by the quick-add row for brand-new grns. */
   quickAdd(payload) {
-    return axiosClient.post("/parts/createGrn", payload);
+    return axiosClient.post("/parts/CreateDirectGrn", payload,{  
+        headers: { "Content-Type": "multipart/form-data" },
+}
+);
   },
 
   getVendor(payload) {
-    console.log("getVendor payload", payload);
     return axiosClient.post("/vendors/listVendors", payload);
   },
   searchItemDetails(body) {
@@ -44,7 +46,12 @@ updateGrn(payload) {
 },
 listBinLocation(payload) {
   return axiosClient.post("/binLocations/listBinLocationsForOutlet", payload);
-}
+},
+getStockPositionReport(payload) {
+    return axiosClient.post("/parts/GetStockPositionReport", payload,{
+    responseType: "blob",
+  });
+  },
 }
 
 

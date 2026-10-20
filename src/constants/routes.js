@@ -58,6 +58,8 @@ export const ROUTES = Object.freeze({
   REPORTS_MY_CUSTOMERS: "/my-customers",
   REPORTS_INWARD_OUTWARD: "/inward-outward",
   REPORTS_INVENTORY: "/inventory",
+  REPORTS_PURCHASE_RETURN: "/purchase-return-report",
+  REPORTS_STOCK_POSITION: "/stock-position-report",
   ATTENDANCE: "/attendance",
   SELF_CONFIGURATION: "/self-configuration",
   INTEGRATION: "/integration",
