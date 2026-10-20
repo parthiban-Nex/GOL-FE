@@ -46,7 +46,12 @@ updateGrn(payload) {
 },
 listBinLocation(payload) {
   return axiosClient.post("/binLocations/listBinLocationsForOutlet", payload);
-}
+},
+getStockPositionReport(payload) {
+    return axiosClient.post("/parts/GetStockPositionReport", payload,{
+    responseType: "blob",
+  });
+  },
 }
 
 

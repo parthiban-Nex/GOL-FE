@@ -98,6 +98,10 @@ const Welcome = lazy(() => import("@/pages/welcome/Welcome"));
 const PurchaseReturnReport = lazy(
   () => import("@/pages/reports/PurchaseReturn"),
 );
+
+const StockPositionReport = lazy(
+  () => import("@/pages/reports/StockPosition"),
+);
 export const publicRoutes = [{ path: ROUTES.LOGIN, element: Login }];
 
 export const protectedRoutes = [
@@ -163,6 +167,9 @@ export const protectedRoutes = [
   { path: ROUTES.LOGS_USER, element: UserLog },
   { path: ROUTES.LOGS_AUDIT, element: AuditLog },
   { path: ROUTES.REPORTS_PURCHASE_RETURN, element: PurchaseReturnReport },
+  { path: ROUTES.REPORTS_STOCK_POSITION, element: StockPositionReport },
+
+
 ];
 /** Reachable regardless of auth state. */
 export const utilityRoutes = {
