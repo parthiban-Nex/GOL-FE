@@ -5,7 +5,7 @@ import SalaryTab from "@/pages/attendance/SalaryTab";
 
 const TABS = [
   { key: "attendance", label: "Attendance" },
-  { key: "salary",     label: "Salary" },
+  // { key: "salary",     label: "Salary" },
 ];
 
 /**
