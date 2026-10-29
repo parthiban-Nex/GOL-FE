@@ -69,7 +69,23 @@ export default function MultiSelect({
       disabled={disabled}
       options={listOptions}
       value={selectedOptions}
-      sx={sx}
+      sx={{
+        fontFamily: "inherit",
+        "& *": {
+          fontFamily: "inherit",
+        },
+        ...sx,
+      }}
+      slotProps={{
+        paper: {
+          sx: {
+            fontFamily: "inherit",
+            "& *": {
+              fontFamily: "inherit",
+            },
+          },
+        },
+      }}
       noOptionsText="No matches"
       isOptionEqualToValue={(o, v) => o.value === v.value}
       getOptionLabel={(o) => o.label}
@@ -88,14 +104,18 @@ export default function MultiSelect({
         const isSelectAllRow = option.value === SELECT_ALL_VALUE;
         const checked = isSelectAllRow ? allSelected : selected;
         return (
-          <li {...props} key={option.value}>
+          <li
+            {...props}
+            key={option.value}
+            style={{ fontFamily: "inherit", fontSize: "0.8125rem", ...props.style }}
+          >
             <Checkbox
               icon={autocompleteIcon}
               checkedIcon={autocompleteCheckedIcon}
               checked={checked}
               style={{ marginRight: 8 }}
             />
-            {option.label}
+            <span style={{ fontFamily: "inherit" }}>{option.label}</span>
           </li>
         );
       }}
@@ -106,6 +126,7 @@ export default function MultiSelect({
                 key="__all__"
                 label={selectAllLabel ?? `All ${label ?? ""}`}
                 size="small"
+                sx={{ fontFamily: "inherit", fontSize: "0.75rem" }}
               />,
             ]
           : tagValue.map((option, index) => (
@@ -113,6 +134,7 @@ export default function MultiSelect({
                 key={option.value}
                 label={option.label}
                 size="small"
+                sx={{ fontFamily: "inherit", fontSize: "0.75rem" }}
                 {...getTagProps({ index })}
               />
             ))
@@ -128,8 +150,18 @@ export default function MultiSelect({
           error={Boolean(error)}
           helperText={error}
           sx={{
+            fontFamily: "inherit",
+            "& .MuiInputBase-root": {
+              fontFamily: "inherit",
+              fontSize: "0.8125rem",
+            },
+            "& .MuiInputBase-input": {
+              fontFamily: "inherit",
+              fontSize: "0.8125rem",
+            },
             "& .MuiAutocomplete-inputRoot": {
               paddingBottom: "5px",
+              fontFamily: "inherit",
             },
             "& .MuiInput-underline:before": {
               borderBottomColor: "#ccc",
@@ -141,10 +173,12 @@ export default function MultiSelect({
               borderBottomColor: "#1976d2",
             },
             "& .MuiInputBase-input::placeholder": {
+              fontFamily: "inherit",
               color: "#999",
               opacity: 1,
             },
             "& .MuiInputLabel-root": {
+              fontFamily: "inherit",
               color: "#999",
             },
             "& .MuiInputLabel-root.Mui-focused": {

@@ -39,14 +39,17 @@ const OPTIONAL_COLUMNS = [
 ];
 
 const TIER_META = {
-  oem: { label: "OEM", headerClass: "bg-accent-100 text-accent-700" },
+  oem: {
+    label: "OEM",
+    badgeClass: "bg-[#E86014] text-white",
+  },
   primary: {
     label: "Vendor Part - Primary",
-    headerClass: "bg-emerald-100 text-emerald-700",
+    badgeClass: "bg-[#2F9E44] text-white",
   },
   secondary: {
     label: "Vendor Part - Secondary",
-    headerClass: "bg-amber-100 text-amber-700",
+    badgeClass: "bg-[#C69214] text-white",
   },
 };
 const TIER_ORDER = ["oem", "primary", "secondary"];
@@ -395,22 +398,8 @@ export default function Top20Cars() {
   };
 
   const fetchOrders = useCallback(async () => {
-    const loggedInUser =
-      storage.get(appConfig.userStorageKey) ||
-      JSON.parse(localStorage.getItem("user") || "{}");
-    const workshopId =
-      loggedInUser?.outlet?.outlet_code ||
-      loggedInUser?.outlet?.code ||
-      loggedInUser?.outlet?.workshopId ||
-      loggedInUser?.outlet?.id ||
-      loggedInUser?.outlet_code ||
-      loggedInUser?.outletCode ||
-      loggedInUser?.workshopId ||
-      loggedInUser?.customer_account_id ||
-      "";
-
     try {
-      const res = await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+      const res = await catalogueApi.getDirectEnquiryOrderList();
       const list = res?.data || res?.orders || extractData(res);
       if (Array.isArray(list)) {
         setOrders(list);
@@ -911,22 +900,21 @@ export default function Top20Cars() {
     const loggedInUser =
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
+
     const workshopId =
       loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.outletCode ||
       loggedInUser?.outlet?.code ||
-      loggedInUser?.outlet?.workshopId ||
-      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||
-      loggedInUser?.customer_account_id ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       "";
 
     const customerCode =
+      (loggedInUser?.customer_account_id && loggedInUser.customer_account_id !== "KAHD" ? loggedInUser.customer_account_id : null) ||
       (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
-      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
-      loggedInUser?.outlet?.customer_code ||
-      loggedInUser?.outlet?.customerCode ||
       "NMSA0786";
 
     const payload = {
@@ -949,12 +937,15 @@ export default function Top20Cars() {
 
       const isSuccess =
         response?.success === true ||
+        response?.data?.success === true ||
         Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
 
       const enqNo =
         response?.enquiry_no ||
         response?.data?.enquiry_no ||
-        response?.enquiryNo;
+        response?.enquiryNo ||
+        response?.data?.enquiryNo ||
+        "Direct Enquiry";
 
       if (!isSuccess) {
         const errorMsg =
@@ -985,7 +976,7 @@ export default function Top20Cars() {
       // Also remove from backend cart to stay in sync
       itemsToCheckout.forEach((item) => {
         const pNo = item.part_number || item.code || item.partNumber;
-        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => { });
       });
 
       setTab("orders");
@@ -1433,63 +1424,71 @@ function ExplorePhase({
             </span>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="border" onClick={onClearEdit}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="border" size="sm" onClick={onClearEdit}>
             Clear &amp; Edit
           </Button>
-          <Button variant="secondary" icon={Pencil} onClick={onEditSelection}>
+          <Button variant="secondary" size="sm" icon={Pencil} onClick={onEditSelection}>
             Edit Selection
           </Button>
         </div>
       </div>
 
-      <div className="mb-4 space-y-3">
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">
-            Brand Group
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {BRAND_GROUP_TABS.map((t) => {
-              const active = brandGroups.includes(t.value);
-              return (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => onToggleBrandGroup(t.value)}
-                  className={clsx(
-                    "rounded-full px-4 cursor-pointer py-1.5 text-sm font-semibold transition-colors",
-                    active
-                      ? "border border-accent-500 bg-white text-accent-600"
-                      : "border border-ink-200 bg-white text-ink-600 hover:bg-ink-50",
-                  )}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
+      <div className="mb-4 space-y-4">
+        <div className="flex flex-wrap items-end gap-6 sm:gap-8">
+          <div>
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-500">
+              Brand Group
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {BRAND_GROUP_TABS.map((t) => {
+                const active = brandGroups.includes(t.value);
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => onToggleBrandGroup(t.value)}
+                    className={clsx(
+                      "rounded-full px-4 cursor-pointer py-1 text-xs font-semibold transition-colors",
+                      active
+                        ? "border border-accent-500 bg-white text-accent-600"
+                        : "border border-ink-200 bg-white text-ink-600 hover:bg-ink-50",
+                    )}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="w-44 sm:w-48">
+            <UnderlineField label="Brand">
+              <MultiSelect
+                options={brandOptions}
+                value={selectedBrands}
+                onChange={setSelectedBrands}
+                placeholder="All Brands"
+              />
+            </UnderlineField>
+          </div>
+
+          <div className="w-44 sm:w-48">
+            <UnderlineField label="Columns">
+              <MultiSelect
+                options={OPTIONAL_COLUMNS}
+                value={selectedColumns}
+                onChange={setSelectedColumns}
+                placeholder="Add columns"
+                withSelectAll
+                selectAllLabel="All"
+              />
+            </UnderlineField>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_2fr_auto]">
-          <UnderlineField label="Brand">
-            <MultiSelect
-              options={brandOptions}
-              value={selectedBrands}
-              onChange={setSelectedBrands}
-              placeholder="All Brands"
-            />
-          </UnderlineField>
-          <UnderlineField label="Columns">
-            <MultiSelect
-              options={OPTIONAL_COLUMNS}
-              value={selectedColumns}
-              onChange={setSelectedColumns}
-              placeholder="Add columns"
-              withSelectAll
-              selectAllLabel="All"
-            />
-          </UnderlineField>
-          <div className="mt-2.5 ">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
             <Input
               type="search"
               value={partQuery}
@@ -1497,11 +1496,8 @@ function ExplorePhase({
               placeholder="Search Part"
             />
           </div>
-          <div className="self-end">
-            <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-700">
-              <Icons.PackageOpen className="h-4 w-4 text-accent-500" />
-              <span className="font-bold">{totalPartsCount}</span> parts
-            </span>
+          <div className="whitespace-nowrap text-xs text-ink-500 font-medium">
+            <span className="font-semibold text-ink-700">{totalPartsCount}</span> parts
           </div>
         </div>
       </div>
@@ -1526,15 +1522,15 @@ function ExplorePhase({
 
 /* ─── Combined table (Brand Group = All): OEM + Primary + Secondary side by side ─── */
 const COL_WIDTH = {
-  components: 190,
-  partNo: 130,
-  brand: 100,
-  mrp: 95,
-  saleRate: 100,
-  qty: 130,
-  warranty: 90,
-  coins: 75,
-  etd: 70,
+  components: 180,
+  partNo: 105,
+  brand: 90,
+  mrp: 68,
+  saleRate: 72,
+  qty: 85,
+  warranty: 75,
+  coins: 65,
+  etd: 60,
 };
 
 function tierColumnKeys(tierKey, extraColumns) {
@@ -1548,12 +1544,9 @@ function tierColumnKeys(tierKey, extraColumns) {
 }
 
 const TIER_TINT = {
-  oem: { header: "bg-accent-100 text-accent-700", cell: "bg-accent-50/50" },
-  primary: {
-    header: "bg-emerald-100 text-emerald-700",
-    cell: "bg-emerald-50/50",
-  },
-  secondary: { header: "bg-amber-100 text-amber-700", cell: "bg-amber-50/50" },
+  oem: { cell: "bg-[#FFF9F5]" },
+  primary: { cell: "bg-[#F3FAF5]" },
+  secondary: { cell: "bg-[#FEFAF2]" },
 };
 
 function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
@@ -1568,8 +1561,8 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-ink-200 shadow-xs">
       <table
-        className="border-collapse text-sm"
-        style={{ tableLayout: "fixed", width: totalWidth, minWidth: "100%" }}
+        className="border-collapse text-xs"
+        style={{ tableLayout: "fixed", width: "100%", minWidth: totalWidth }}
       >
         <colgroup>
           <col style={{ width: COL_WIDTH.components }} />
@@ -1583,7 +1576,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
           <tr>
             <th
               rowSpan={2}
-              className="sticky left-0 z-20 border-r border-ink-200 bg-white px-4 py-3 text-left text-xs font-semibold text-ink-600 align-middle shadow-[2px_0_4px_rgba(0,0,0,0.04)]"
+              className="sticky left-0 z-20 border-r border-ink-100 bg-white px-3.5 py-3 text-left text-xs font-semibold text-ink-700 align-middle shadow-[2px_0_4px_rgba(0,0,0,0.03)]"
             >
               Components
             </th>
@@ -1599,8 +1592,8 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
               >
                 <span
                   className={clsx(
-                    "inline-block rounded-md px-3 py-1 text-xs font-semibold uppercase",
-                    TIER_TINT[tierKey].header,
+                    "inline-block rounded-md px-3 py-0.5 text-xs font-bold shadow-xs",
+                    TIER_META[tierKey].badgeClass,
                   )}
                 >
                   {TIER_META[tierKey].label}
@@ -1608,7 +1601,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
               </th>
             ))}
           </tr>
-          <tr className="text-[11px] font-medium text-ink-500">
+          <tr className="text-xs font-medium text-ink-500">
             {tiers.map((tierKey, i) => (
               <SubHeaders
                 key={tierKey}
@@ -1622,8 +1615,8 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.rowId} className="border-t border-ink-100 align-top">
-              <td className="sticky left-0 z-10 border-r border-ink-200 bg-white px-4 py-4 text-sm font-semibold uppercase text-ink-800 truncate shadow-[2px_0_4px_rgba(0,0,0,0.04)]">
+            <tr key={row.rowId} className="border-t border-ink-100 align-middle">
+              <td className="sticky left-0 z-10 border-r border-ink-100 bg-white px-3.5 py-2.5 text-xs font-bold uppercase text-ink-800 leading-snug whitespace-normal break-words shadow-[2px_0_4px_rgba(0,0,0,0.03)]">
                 {row.components}
               </td>
               {tiers.map((tierKey, i) => {
@@ -1684,9 +1677,10 @@ function SubHeaders({ colKeys, tint, lastGroup }) {
         <th
           key={k}
           className={clsx(
-            "px-3 py-2 truncate",
+            "py-2 text-xs font-medium text-ink-500",
             tint,
             COL_LABEL[k].align,
+            k === "partNo" ? "px-2" : "px-1.5",
             i === colKeys.length - 1 && !lastGroup && "border-r border-ink-100",
           )}
         >
@@ -1703,7 +1697,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
       <td
         colSpan={colKeys.length}
         className={clsx(
-          "px-3 py-4 text-center text-xs text-ink-400",
+          "px-2 py-3 text-center text-xs text-ink-400",
           tint,
           !lastGroup && "border-r border-ink-100",
         )}
@@ -1721,16 +1715,20 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
     <>
       {colKeys.map((k, i) => {
         const isLastCol = i === colKeys.length - 1;
-        const cellCls = clsx(
-          "px-3 py-4 truncate",
-          tint,
-          isLastCol && !lastGroup && "border-r border-ink-100",
-        );
+        const borderR = isLastCol && !lastGroup ? "border-r border-ink-100" : "";
         switch (k) {
           case "partNo":
             return (
-              <td key={k} className={cellCls}>
-                <span className="text-xs font-semibold text-ink-800">
+              <td
+                key={k}
+                className={clsx(
+                  "px-2 py-2.5 text-left whitespace-normal break-all leading-tight",
+                  tint,
+                  borderR,
+                )}
+                title={partNo || tier.code}
+              >
+                <span className="text-xs font-semibold text-ink-800 block">
                   {partNo || tier.code}
                 </span>
               </td>
@@ -1746,11 +1744,8 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(
-                  cellCls,
-                  "text-xs text-ink-600 whitespace-normal break-words" // <-- replaces nowrap
-                )}
-                title={brandName} // <-- Tooltip showing full name on mouse hover
+                className={clsx("px-2 py-3 text-xs text-ink-600 whitespace-normal break-words", tint, borderR)}
+                title={brandName}
               >
                 {brandName}
               </td>
@@ -1759,7 +1754,10 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
 
           case "mrp":
             return (
-              <td key={k} className={clsx(cellCls, "text-center text-ink-700")}>
+              <td
+                key={k}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-600 font-medium whitespace-nowrap", tint, borderR)}
+              >
                 ₹{Math.round(mrp).toLocaleString("en-IN")}
               </td>
             );
@@ -1768,8 +1766,9 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
               <td
                 key={k}
                 className={clsx(
-                  cellCls,
-                  "text-center font-semibold text-ink-800",
+                  "px-2 py-3 text-center text-xs font-semibold text-ink-800 whitespace-nowrap",
+                  tint,
+                  borderR,
                 )}
               >
                 ₹{Math.round(saleRate).toLocaleString("en-IN")}
@@ -1777,9 +1776,9 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             );
           case "qty":
             return (
-              <td key={k} className={cellCls}>
+              <td key={k} className={clsx("px-2 py-3", tint, borderR)}>
                 <div className="flex justify-center">
-                  <CatalogueQtyStepper value={qty} onChange={onQty} min={0} />
+                  <CatalogueQtyStepper value={qty} onChange={onQty} min={0} size="xs" />
                 </div>
               </td>
             );
@@ -1787,7 +1786,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.warrantyDays ? `${tier.warrantyDays}d` : "—"}
               </td>
@@ -1796,7 +1795,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.points || "—"}
               </td>
@@ -1805,7 +1804,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.eda != null ? `${tier.eda}d` : "—"}
               </td>
@@ -1973,7 +1972,7 @@ function TierTable({
 function UnderlineField({ label, children }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-semibold text-ink-500 uppercase tracking-wide">{label}</p>
+      <p className="mb-1 text-xs font-medium text-ink-500">{label}</p>
       {children}
     </div>
   );

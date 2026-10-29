@@ -95,6 +95,10 @@ const DynamicModulePage = lazy(
 const Unauthorized = lazy(() => import("@/pages/errors/Unauthorized"));
 const NotFound = lazy(() => import("@/pages/errors/NotFound"));
 const Welcome = lazy(() => import("@/pages/welcome/Welcome"));
+const GarageOnboard = lazy(() => import("@/pages/garage/GarageOnboard"));
+const GarageApprovals = lazy(() => import("@/pages/garage/GarageApprovals"));
+const GarageSetup = lazy(() => import("@/pages/garage/GarageSetup"));
+const GarageSetupApproval = lazy(() => import("@/pages/garage/GarageSetupApproval"));
 export const publicRoutes = [{ path: ROUTES.LOGIN, element: Login }];
 
 export const protectedRoutes = [
@@ -159,6 +163,10 @@ export const protectedRoutes = [
   { path: ROUTES.MASTERS_VARIANT, element: Variant },
   { path: ROUTES.LOGS_USER, element: UserLog },
   { path: ROUTES.LOGS_AUDIT, element: AuditLog },
+  { path: ROUTES.GARAGE_ONBOARD, element: GarageOnboard, alwaysAllowed: true },
+  { path: ROUTES.GARAGE_APPROVALS, element: GarageApprovals, alwaysAllowed: true },
+  { path: ROUTES.GARAGE_SETUP, element: GarageSetup, alwaysAllowed: true },
+  { path: ROUTES.GARAGE_SETUP_APPROVAL, element: GarageSetupApproval, alwaysAllowed: true },
 ];
 /** Reachable regardless of auth state. */
 export const utilityRoutes = {

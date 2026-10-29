@@ -280,22 +280,8 @@ export default function MyTvsParts() {
   };
 
   const fetchOrders = useCallback(async () => {
-    const loggedInUser =
-      storage.get(appConfig.userStorageKey) ||
-      JSON.parse(localStorage.getItem("user") || "{}");
-    const workshopId =
-      loggedInUser?.outlet?.outlet_code ||
-      loggedInUser?.outlet?.code ||
-      loggedInUser?.outlet?.workshopId ||
-      loggedInUser?.outlet?.id ||
-      loggedInUser?.outlet_code ||
-      loggedInUser?.outletCode ||
-      loggedInUser?.workshopId ||
-      loggedInUser?.customer_account_id ||
-      "";
-
     try {
-      const res = await catalogueApi.getDirectEnquiryOrderList({ workshopId });
+      const res = await catalogueApi.getDirectEnquiryOrderList();
       const list = res?.data || res?.orders || extractData(res);
       if (Array.isArray(list)) {
         setOrders(list);
@@ -460,22 +446,21 @@ export default function MyTvsParts() {
     const loggedInUser =
       storage.get(appConfig.userStorageKey) ||
       JSON.parse(localStorage.getItem("user") || "{}");
+
     const workshopId =
       loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.outletCode ||
       loggedInUser?.outlet?.code ||
-      loggedInUser?.outlet?.workshopId ||
-      loggedInUser?.outlet?.id ||
       loggedInUser?.outlet_code ||
       loggedInUser?.outletCode ||
       loggedInUser?.workshopId ||
-      loggedInUser?.customer_account_id ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
       "";
 
     const customerCode =
+      (loggedInUser?.customer_account_id && loggedInUser.customer_account_id !== "KAHD" ? loggedInUser.customer_account_id : null) ||
       (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
-      (loggedInUser?.customerCode && loggedInUser.customerCode !== "050" && loggedInUser.customerCode !== "0046" ? loggedInUser.customerCode : null) ||
-      loggedInUser?.outlet?.customer_code ||
-      loggedInUser?.outlet?.customerCode ||
       "NMSA0786";
 
     const payload = {
@@ -498,12 +483,15 @@ export default function MyTvsParts() {
 
       const isSuccess =
         response?.success === true ||
+        response?.data?.success === true ||
         Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
 
       const enqNo =
         response?.enquiry_no ||
         response?.data?.enquiry_no ||
-        response?.enquiryNo;
+        response?.enquiryNo ||
+        response?.data?.enquiryNo ||
+        "Direct Enquiry";
 
       if (!isSuccess) {
         const errorMsg =
@@ -534,7 +522,7 @@ export default function MyTvsParts() {
       // Also remove from backend cart to stay in sync
       itemsToCheckout.forEach((item) => {
         const pNo = item.part_number || item.code || item.partNumber;
-        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => {});
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => { });
       });
 
       setSubTab("orders");

@@ -6,7 +6,8 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-semibold text-ink-800">My Orders</h2>
-        <Button onClick={onRefresh}>
+        <Button onClick={onRefresh} className="inline-flex items-center gap-1.5">
+          <RefreshCw className="h-4 w-4" />
           Refresh
         </Button>
       </div>
@@ -19,10 +20,17 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
           </div>
         ) : (
           orders.map((o) => {
-            const enqNo = o.enquiryNo || o.enquiry_no || o.id;
+            const enqNo =
+              o.enquiryNo ||
+              o.enquiry_no ||
+              o.orderNos?.[0] ||
+              o.order_nos?.[0] ||
+              o.id ||
+              "—";
             const isCompleted =
               String(o.status || "").toUpperCase() === "COMPLETED" ||
               String(o.status || "").toUpperCase() === "DELIVERED";
+            const partsCount = (o.parts || o.items)?.length || 0;
 
             return (
               <div
@@ -40,8 +48,8 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
                     </button>
                     <p className="text-[11px] text-ink-400 mt-0.5">
                       {formatDate(
-                        o.orderCreationDate ||
-                          o.createdOn ||
+                        o.createdOn ||
+                          o.orderCreationDate ||
                           o.createdAt ||
                           o.order_creation_date
                       )}
@@ -71,6 +79,13 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
                     <span className="font-medium text-ink-800">{o.source || "GOL"}</span>
                   </div>
                 </div>
+
+                {partsCount > 0 && (
+                  <div className="text-xs text-ink-500">
+                    <span className="text-ink-400">Items: </span>
+                    <span className="font-medium text-ink-700">{partsCount} {partsCount === 1 ? 'part' : 'parts'}</span>
+                  </div>
+                )}
 
                 <div className="pt-1">
                   <button
@@ -113,7 +128,13 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
               </tr>
             )}
             {orders.map((o) => {
-              const enqNo = o.enquiryNo || o.enquiry_no || o.id;
+              const enqNo =
+                o.enquiryNo ||
+                o.enquiry_no ||
+                o.orderNos?.[0] ||
+                o.order_nos?.[0] ||
+                o.id ||
+                "—";
               const isCompleted =
                 String(o.status || "").toUpperCase() === "COMPLETED" ||
                 String(o.status || "").toUpperCase() === "DELIVERED";
@@ -147,8 +168,8 @@ export default function CatalogueOrdersTable({ orders, onView, onRefresh }) {
                   </td>
                   <td className="px-3 py-4 text-ink-600">
                     {formatDate(
-                      o.orderCreationDate ||
-                        o.createdOn ||
+                      o.createdOn ||
+                        o.orderCreationDate ||
                         o.createdAt ||
                         o.order_creation_date
                     )}

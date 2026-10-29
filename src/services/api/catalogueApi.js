@@ -244,8 +244,19 @@ export const catalogueApi = {
   },
 
   // ─── Parts search / listing ────────────────────────────────────────────
-  getPartsList(filters = {}) {
-    return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
+  getPartsList(filters = {}, isGlobal = false) {
+    const globalFlag = isGlobal || filters.isGlobal || filters.customerCode === "0046";
+    const endpoint = globalFlag
+      ? "/catelog/global/partsmart/getPartsList"
+      : "/catelog/partsmart/getPartsList";
+    return axiosClient.post(endpoint, normalizePayload(filters))
+      .catch((err) => {
+        // Fallback to standard endpoint if global route isn't available
+        if (globalFlag) {
+          return axiosClient.post("/catelog/partsmart/getPartsList", normalizePayload(filters));
+        }
+        throw err;
+      });
   },
   generalSearch(params = {}) {
     let searchKey = "";
@@ -260,14 +271,20 @@ export const catalogueApi = {
 
     const cleanKey = String(searchKey).trim();
     const extraPayload = typeof params === "object" ? normalizePayload(params) : {};
+    const code = String(customerCode || "0046").trim();
     const payload = {
       ...extraPayload,
+      customerCode: code,
       searchKey: cleanKey,
-      customerCode: customerCode || "0046",
+      limit: 20,
+      offset: 0,
     };
     if (typeof params === "object") {
       if (params.limit !== undefined) payload.limit = Number(params.limit);
       if (params.offset !== undefined) payload.offset = Number(params.offset);
+      if (params.sortOrder) payload.sortOrder = params.sortOrder;
+      if (params.fieldOrder) payload.fieldOrder = params.fieldOrder;
+      if (params.customerCodes) payload.customerCodes = params.customerCodes;
     }
 
     return axiosClient.post("/catelog/partsmart/generalSearch", payload)
@@ -298,8 +315,8 @@ export const catalogueApi = {
   // ─── Cart ──────────────────────────────────────────────────────────────
   getCart() {
     return axiosClient
-      .get(`/catelog/getCartItems?_t=${Date.now()}`)
-      .catch(() => axiosClient.get(`/catelog/getCart?_t=${Date.now()}`));
+      .get(`/catelog/getCartItems`)
+      .catch(() => axiosClient.get(`/catelog/getCart`));
   },
   addToCart(payload) {
     return axiosClient.post("/catelog/addToCart", payload).catch(() => axiosClient.post("/catelog/cart", payload));
@@ -361,17 +378,22 @@ export const catalogueApi = {
 
   /**
    * 2. Order List (Direct Enquiry List)
-   * GET /catelog/partsmart/order/direct-enquiry/list?workshopId=...
-   * @param {string|Object} params - workshopId string or { workshopId }
+   * Live Mode:  GET /catelog/partsmart/order/direct-enquiry/list
+   * Local Mode: GET /catelog/partsmart/order/direct-enquiry/list?workshopId=KAHD
    */
   getDirectEnquiryOrderList(params = {}) {
-    const queryParams = typeof params === "string" ? { workshopId: params } : params;
+    const queryParams =
+      typeof params === "string" ? (params ? { workshopId: params } : {}) : { ...params };
+
+    // 1. Remove _t (Date.now()) so cache-buster timestamp never pollutes the URL
+    delete queryParams._t;
+
+    // 2. Only attach params if they actually exist (prevents empty "?" in URL)
+    const hasParams = Object.keys(queryParams).length > 0;
+
     return axiosClient
-      .get("/catelog/partsmart/order/direct-enquiry/list", {
-        params: queryParams,
-      })
+      .get("/catelog/partsmart/order/direct-enquiry/list", hasParams ? { params: queryParams } : {})
       .catch(() => {
-        // Fallback to existing orders endpoints if direct-enquiry route returned 404
         return catalogueApi.getOrderHistories(queryParams);
       });
   },

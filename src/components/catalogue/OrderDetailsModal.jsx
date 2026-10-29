@@ -15,7 +15,11 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const enquiryNo = order?.enquiryNo || order?.enquiry_no;
+  const enquiryNo =
+    order?.enquiryNo ||
+    order?.enquiry_no ||
+    order?.orderNos?.[0] ||
+    order?.order_nos?.[0];
 
   useEffect(() => {
     if (!isOpen) return;
@@ -90,12 +94,16 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
     ? orderNos.join(", ")
     : "—";
 
-  const parts =
-    Array.isArray(details?.parts) && details.parts.length
-      ? details.parts
-      : Array.isArray(order?.parts)
-      ? order.parts
-      : [];
+  const rawParts =
+    (Array.isArray(details?.parts) && details.parts.length ? details.parts : null) ||
+    (Array.isArray(details?.items) && details.items.length ? details.items : null) ||
+    (Array.isArray(order?.parts) && order.parts.length ? order.parts : null) ||
+    (Array.isArray(order?.items) && order.items.length ? order.items : null) ||
+    [];
+
+  const hasPrice = rawParts.some(
+    (p) => p.price != null || p.mrp != null || p.saleRate != null || p.rate != null
+  );
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -184,15 +192,16 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
               <tr className="border-b border-ink-100 text-[11px] font-semibold text-ink-400">
                 <th className="pb-3 text-left">Part No / Name</th>
                 <th className="pb-3 text-center">Qty</th>
+                {hasPrice && <th className="pb-3 text-right">Price</th>}
                 <th className="pb-3 text-left">Status</th>
                 <th className="pb-3 text-center">Order No</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-ink-100">
-              {parts.length === 0 ? (
+              {rawParts.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={hasPrice ? 5 : 4}
                     className="py-8 text-center text-sm text-ink-500"
                   >
                     {loading ? (
@@ -206,12 +215,12 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
                   </td>
                 </tr>
               ) : (
-                parts.map((part, idx) => {
+                rawParts.map((part, idx) => {
                   const partNo =
                     part.part_no ||
+                    part.partNo ||
                     part.partNumber ||
                     part.code ||
-                    part.partNo ||
                     "—";
                   const partName =
                     part.part_name ||
@@ -221,6 +230,8 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
                     part.description ||
                     partNo;
                   const qty = Number(part.qty ?? part.quantity ?? 1);
+                  const price =
+                    part.price ?? part.mrp ?? part.saleRate ?? part.rate ?? null;
                   const status =
                     part.status || "Proceed to Proforma";
                   const orderNo =
@@ -245,6 +256,13 @@ export default function OrderDetailsModal({ isOpen = true, onClose, order }) {
                       <td className="py-3.5 text-center font-medium text-ink-800">
                         {qty}
                       </td>
+                      {hasPrice && (
+                        <td className="py-3.5 text-right font-medium text-ink-800">
+                          {price != null
+                            ? `₹${Number(price).toLocaleString("en-IN")}`
+                            : "—"}
+                        </td>
+                      )}
                       <td className="py-3.5">
                         <span className="text-xs font-semibold text-amber-600">
                           {status}
