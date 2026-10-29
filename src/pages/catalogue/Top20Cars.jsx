@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import clsx from "clsx";
-import { Check, Pencil, X, PackageOpen } from "lucide-react";
+import { Check, Pencil, X, Car } from "lucide-react";
+import * as Icons from "lucide-react";
 import MultiSelect from "@/components/ui/Multiselect";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -11,20 +12,17 @@ import CatalogueOrdersTable from "@/components/catalogue/CatalogueOrdersTable";
 import OrderDetailsModal from "@/components/catalogue/OrderDetailsModal";
 import CatalogueQtyStepper from "@/components/catalogue/CatalogueQtyStepper";
 import {
-  MAKE_OPTIONS,
-  MODEL_OPTIONS_BY_MAKE,
-  VARIANT_OPTIONS,
-  FUEL_OPTIONS,
-  YEAR_OPTIONS,
-  GENERATIONS,
-  CATEGORY_OPTIONS,
-  SUBCATEGORY_MAP,
-  TIERED_PARTS,
-  INITIAL_CART_ITEMS,
-  INITIAL_ORDERS,
-  ORDER_DETAILS_BY_ENQUIRY,
-} from "@/pages/catalogue/mockCatalogue";
+  catalogueApi,
+  getCalculatedSaleRate,
+  formatDisplayPartNo,
+  TIER_DISCOUNTS,
+  isPartMatchingSearch,
+} from "@/services/api/catalogueApi";
 import { showToast } from "@/utils/toast";
+import { storage } from "@/utils/storage";
+import { appConfig } from "@/config/appConfig";
+
+const CUSTOMER_CODE = "050";
 
 const BRAND_GROUP_TABS = [
   { value: "all", label: "All" },
@@ -41,17 +39,305 @@ const OPTIONAL_COLUMNS = [
 ];
 
 const TIER_META = {
-  oem: { label: "OEM", headerClass: "bg-accent-100 text-accent-700" },
+  oem: {
+    label: "OEM",
+    badgeClass: "bg-[#E86014] text-white",
+  },
   primary: {
     label: "Vendor Part - Primary",
-    headerClass: "bg-emerald-100 text-emerald-700",
+    badgeClass: "bg-[#2F9E44] text-white",
   },
   secondary: {
     label: "Vendor Part - Secondary",
-    headerClass: "bg-amber-100 text-amber-700",
+    badgeClass: "bg-[#C69214] text-white",
   },
 };
 const TIER_ORDER = ["oem", "primary", "secondary"];
+
+function extractData(res) {
+  if (!res) return [];
+  if (Array.isArray(res)) return res;
+  if (Array.isArray(res.cart?.selected)) return res.cart.selected;
+  if (Array.isArray(res.cart?.items)) return res.cart.items;
+  if (Array.isArray(res.cart?.parts)) return res.cart.parts;
+  if (Array.isArray(res.cart)) return res.cart;
+  if (Array.isArray(res.data)) return res.data;
+  if (Array.isArray(res.result)) return res.result;
+  if (Array.isArray(res.items)) return res.items;
+  if (Array.isArray(res.list)) return res.list;
+  if (Array.isArray(res.masterList)) return res.masterList;
+  if (Array.isArray(res.masterData)) return res.masterData;
+  if (Array.isArray(res.modelList)) return res.modelList;
+  if (Array.isArray(res.makeList)) return res.makeList;
+  if (res && typeof res === "object") {
+    if (res.cart && typeof res.cart === "object") {
+      for (const key of Object.keys(res.cart)) {
+        if (Array.isArray(res.cart[key])) return res.cart[key];
+      }
+    }
+    for (const key of Object.keys(res)) {
+      if (Array.isArray(res[key])) return res[key];
+    }
+  }
+  return [];
+}
+
+function toOptions(data, valKey = "name", labelKey = "name") {
+  const items = extractData(data);
+  return items
+    .map((item) => {
+      if (typeof item === "string" || typeof item === "number") {
+        return { value: String(item), label: String(item) };
+      }
+      if (!item || typeof item !== "object") {
+        return { value: "", label: "" };
+      }
+      const val =
+        item.masterName ??
+        item.masterValue ??
+        item.masterCode ??
+        item.value ??
+        item.id ??
+        item.make ??
+        item.model ??
+        item.vehicleGeneration ??
+        item.generation ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
+        item.aggregate ??
+        item.subAggregate ??
+        item[valKey] ??
+        item.name ??
+        item.label ??
+        "";
+      const lbl =
+        item.label ??
+        item.masterName ??
+        item.masterValue ??
+        item.name ??
+        item.make ??
+        item.model ??
+        item.vehicleGeneration ??
+        item.generation ??
+        item.variant ??
+        item.fuelType ??
+        item.year ??
+        item.aggregate ??
+        item.subAggregate ??
+        item[labelKey] ??
+        item.value ??
+        String(val);
+      return { value: String(val), label: String(lbl), raw: item };
+    })
+    .filter((o) => o.value !== "");
+}
+
+function toGenerations(data) {
+  const items = extractData(data);
+  return items.map((item, idx) => {
+    if (typeof item === "string" || typeof item === "number") {
+      return { value: String(item), label: String(item), url: "" };
+    }
+    if (!item || typeof item !== "object") {
+      return { value: `gen_${idx}`, label: `Gen ${idx + 1}`, url: "" };
+    }
+    const val =
+      item.masterName ??
+      item.masterValue ??
+      item.masterCode ??
+      item.value ??
+      item.id ??
+      item.code ??
+      item.vehicleGeneration ??
+      item.generation ??
+      item.name ??
+      `gen_${idx}`;
+    const lbl =
+      item.label ??
+      item.masterName ??
+      item.name ??
+      item.vehicleGeneration ??
+      item.generation ??
+      String(val);
+    const url =
+      item.imageUrl ??
+      item.url ??
+      item.image_url ??
+      item.image ??
+      item.picture ??
+      item.img ??
+      "";
+    return { value: String(val), label: String(lbl), url };
+  });
+}
+function groupPartsByComponent(data) {
+  const items = extractData(data);
+  if (!items.length) return [];
+
+  if (items[0] && (items[0].oem || items[0].primary || items[0].secondary)) {
+    return items;
+  }
+
+  // 1. Group items by component into tier arrays so no parts are overwritten
+  const componentMap = new Map();
+  const seenPartKeys = new Set();
+
+  items.forEach((item, index) => {
+    if (!item || typeof item !== "object") return;
+
+    const rawPartNumber = String(item.partNumber || item.oemPartNumber || item.code || "").trim();
+    const brandStr = String(item.brandName || item.brand || "").trim().toUpperCase();
+
+    // Deduplicate identical part records from backend response
+    const dedupeKey = rawPartNumber
+      ? `${rawPartNumber.toUpperCase()}__${brandStr}`
+      : `item_${index}`;
+
+    if (seenPartKeys.has(dedupeKey)) {
+      return; // Skip duplicate part
+    }
+    seenPartKeys.add(dedupeKey);
+
+    const compName = (
+      item.components ||
+      item.component ||
+      item.itemDescription ||
+      item.partDescription ||
+      `Part ${index + 1}`
+    ).trim();
+
+    const groupKey = compName.toLowerCase();
+
+    if (!componentMap.has(groupKey)) {
+      componentMap.set(groupKey, {
+        components: compName,
+        aggregate: item.aggregate || "",
+        subAggregate: item.subAggregate || "",
+        oem: [],
+        primary: [],
+        secondary: [],
+      });
+    }
+
+    const compGroup = componentMap.get(groupKey);
+
+    const groupFlag = String(
+      item.salesPriceGroup || item.priceGroup || item.group || item.tier || ""
+    ).toLowerCase();
+
+    let tierKey = "oem";
+    if (groupFlag.includes("primary")) {
+      tierKey = "primary";
+    } else if (groupFlag.includes("secondary")) {
+      tierKey = "secondary";
+    } else if (groupFlag.includes("oem")) {
+      tierKey = "oem";
+    } else if (item.brandPriority === true) {
+      tierKey = "primary";
+    }
+
+    const discountPct =
+      item.partConfig?.discountPercent !== undefined &&
+        item.partConfig?.discountPercent !== null
+        ? Number(item.partConfig.discountPercent)
+        : (TIER_DISCOUNTS[tierKey] ? TIER_DISCOUNTS[tierKey] * 100 : 0);
+
+    const mrpVal = Number(item.mrp || item.listPrice || 0);
+    const saleRateVal = getCalculatedSaleRate(mrpVal, tierKey, discountPct);
+    const lineCode = item.lineCode || "";
+    const displayPartNo = formatDisplayPartNo(rawPartNumber, lineCode);
+
+    const tierPart = {
+      code: rawPartNumber,
+      partNumber: rawPartNumber,
+      displayPartNo: displayPartNo || rawPartNumber,
+      brand:
+        item.brandName ||
+        item.brand ||
+        item.oemPartBrand ||
+        (tierKey === "oem" ? (item.make || "OEM") : "-"),
+      mrp: mrpVal,
+      saleRate: saleRateVal,
+      discountPercent: discountPct,
+      discountPerUnit: +(mrpVal - saleRateVal).toFixed(2),
+      golSavings: +(mrpVal - saleRateVal).toFixed(2),
+      taxPercent: parseFloat(item.taxpercent || 18),
+      warranty: item.warrantyDays ? `${item.warrantyDays} Days` : "No warranty",
+      warrantyDays: item.warrantyDays || 0,
+      coins: item.partConfig?.loyaltyBasePoints || item.points || 0,
+      points: item.partConfig?.loyaltyBasePoints || item.points || 0,
+      etd: item.EDA !== undefined ? `${item.EDA} Days` : "Instant",
+      eda: item.EDA !== undefined ? item.EDA : null,
+      lineCode,
+      raw: item,
+      tierType: tierKey,
+    };
+
+    compGroup[tierKey].push(tierPart);
+  });
+
+  // 2. Flatten each component group into rows (one slot per index if multiple parts exist in a tier)
+  const resultRows = [];
+  let rowCounter = 0;
+
+  componentMap.forEach((compGroup, groupKey) => {
+    const maxLen = Math.max(
+      compGroup.oem.length,
+      compGroup.primary.length,
+      compGroup.secondary.length,
+      1
+    );
+
+    for (let slot = 0; slot < maxLen; slot++) {
+      resultRows.push({
+        rowId: `row_${rowCounter++}_${groupKey.replace(/[^a-z0-9]/gi, "_")}_${slot}`,
+        components: compGroup.components,
+        aggregate: compGroup.aggregate,
+        subAggregate: compGroup.subAggregate,
+        oem: compGroup.oem[slot] || null,
+        primary: compGroup.primary[slot] || null,
+        secondary: compGroup.secondary[slot] || null,
+      });
+    }
+  });
+
+  return resultRows;
+}
+
+function normalizeCartItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const partNo = item.partNumber || item.part_number || item.code || item.cartId || item.id;
+  const desc = item.itemDescription || item.part_desc || item.name || partNo;
+  const brand = item.brandName || item.product_brand || item.brand || "MAHINDRA";
+  const qty = Number(item.quantity ?? item.qty ?? 1);
+  const mrp = Number(item.mrp ?? item.part_mrp ?? item.listPrice ?? 0);
+  const listPrice = Number(item.listPrice ?? item.list_price ?? item.billingPrice ?? item.saleRate ?? mrp);
+  const billingPrice = Number(item.billingPrice ?? listPrice);
+  const tax = Number(item.taxAmount ?? item.tax ?? 0);
+  const discountPerUnit = Number(item.discountPerUnit ?? Math.max(0, mrp - listPrice));
+  const totalAmount = Number(item.totalAmount ?? item.total ?? (qty * (billingPrice + tax)));
+
+  return {
+    cartId: String(partNo),
+    id: item.id || String(partNo),
+    name: desc,
+    code: String(partNo),
+    part_number: String(partNo),
+    brand,
+    qty,
+    mrp,
+    saleRate: listPrice,
+    list_price: listPrice,
+    billingPrice,
+    discountPerUnit: Number(discountPerUnit.toFixed(2)),
+    golSavings: item.golSavings || item.savingAmount || 0,
+    tax: Number(tax.toFixed(2)),
+    totalAmount: Number(totalAmount.toFixed(2)),
+    pointsEarned: item.pointsEarned || item.points || item.loyaltyBasePoints || 0,
+    raw: item,
+  };
+}
 
 export default function Top20Cars() {
   const [tab, setTab] = useState("catalogue");
@@ -67,46 +353,271 @@ export default function Top20Cars() {
   const [categories, setCategories] = useState([]);
   const [subcategories, setSubcategories] = useState([]);
 
-  // Now a multi-select array e.g. ["all"] | ["oem"] | ["primary","secondary"]
+  // Dynamic API Options States
+  const [makeOptions, setMakeOptions] = useState([]);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [generationOptions, setGenerationOptions] = useState([]);
+  const [variantOptions, setVariantOptions] = useState([]);
+  const [fuelOptions, setFuelOptions] = useState([]);
+  const [yearOptions, setYearOptions] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+  const [subcategoryOptions, setSubcategoryOptions] = useState([]);
+
+  const [partsList, setPartsList] = useState([]);
+  const [isLoadingParts, setIsLoadingParts] = useState(false);
+
   const [brandGroups, setBrandGroups] = useState(["all"]);
   const [selectedBrands, setSelectedBrands] = useState([]);
   const [selectedColumns, setSelectedColumns] = useState([]);
   const [partQuery, setPartQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
 
-  const [cart, setCart] = useState(INITIAL_CART_ITEMS);
-  const [orders, setOrders] = useState(INITIAL_ORDERS);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(partQuery.trim());
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [partQuery]);
+
+  const [cart, setCart] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [openOrder, setOpenOrder] = useState(null);
 
-  const modelOptions = useMemo(() => {
-    const set = new Set();
-    makes.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => set.add(m)),
-    );
-    return Array.from(set).map((m) => ({ value: m, label: m }));
+  const fetchCart = () => {
+    catalogueApi
+      .getCart()
+      .then((res) => {
+        const raw = extractData(res);
+        if (Array.isArray(raw)) {
+          setCart(raw.map(normalizeCartItem).filter(Boolean));
+        }
+      })
+      .catch((err) => {
+        console.warn("Error fetching cart from backend:", err);
+      });
+  };
+
+  const fetchOrders = useCallback(async () => {
+    try {
+      const res = await catalogueApi.getDirectEnquiryOrderList();
+      const list = res?.data || res?.orders || extractData(res);
+      if (Array.isArray(list)) {
+        setOrders(list);
+      }
+    } catch (err) {
+      console.warn("Error fetching direct enquiry orders:", err);
+    }
+  }, []);
+
+  // 1. Fetch Makes, Top 20 Cars, Cart & Orders on mount
+  useEffect(() => {
+    catalogueApi
+      .getMakes({ customerCode: CUSTOMER_CODE })
+      .then((res) => setMakeOptions(toOptions(res, "make", "make")))
+      .catch(() => setMakeOptions([]));
+
+    catalogueApi
+      .getTop20Cars()
+      .then((res) => {
+        const list = extractData(res);
+        if (list.length) {
+          // Top 20 cars received from API
+        }
+      })
+      .catch(() => { });
+
+    fetchCart();
+    fetchOrders();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch orders whenever user switches to the orders tab
+  useEffect(() => {
+    if (tab === "orders") {
+      fetchOrders();
+    }
+  }, [tab, fetchOrders]);
+
+  // 2. Fetch Models when Makes change
+  useEffect(() => {
+    if (!makes.length) {
+      setModelOptions([]);
+      return;
+    }
+    catalogueApi
+      .getModels({ customerCode: CUSTOMER_CODE, make: makes })
+      .then((res) => setModelOptions(toOptions(res, "model", "model")))
+      .catch(() => setModelOptions([]));
   }, [makes]);
 
-  const subcategoryOptions = useMemo(() => {
-    if (!categories.length) return [];
-    const seen = new Set();
-    const merged = [];
-    categories.forEach((c) => {
-      (SUBCATEGORY_MAP[c] || []).forEach((s) => {
-        if (!seen.has(s.value)) {
-          seen.add(s.value);
-          merged.push(s);
+  // 3. Fetch Generations when Models change
+  useEffect(() => {
+    if (!models.length) {
+      setGenerationOptions([]);
+      return;
+    }
+    catalogueApi
+      .getGenerations({ customerCode: CUSTOMER_CODE, make: makes, model: models })
+      .then((res) => setGenerationOptions(toGenerations(res)))
+      .catch(() => setGenerationOptions([]));
+  }, [makes, models]);
+
+  // 4. Fetch Variants when Generation changes
+  useEffect(() => {
+    if (!generation) {
+      setVariantOptions([]);
+      return;
+    }
+    catalogueApi
+      .getVariants({
+        customerCode: CUSTOMER_CODE,
+        make: makes,
+        model: models,
+        vehicleGeneration: generation,
+      })
+      .then((res) => setVariantOptions(toOptions(res, "variant", "variant")))
+      .catch(() => setVariantOptions([]));
+  }, [makes, models, generation]);
+
+  // 5. Fetch Fuels when Variants change
+  useEffect(() => {
+    if (!variants.length) {
+      setFuelOptions([]);
+      return;
+    }
+    catalogueApi
+      .getFuels({
+        customerCode: CUSTOMER_CODE,
+        make: makes,
+        model: models,
+        vehicleGeneration: generation,
+        variant: variants,
+      })
+      .then((res) => {
+        const opts = toOptions(res, "fuelType", "fuelType");
+        setFuelOptions(opts);
+        if (opts.length === 1) {
+          setFuels([opts[0].value]);
         }
-      });
-    });
-    return merged;
-  }, [categories]);
+      })
+      .catch(() => setFuelOptions([]));
+  }, [makes, models, generation, variants]);
+
+  // 6. Fetch Years when Fuels change
+  useEffect(() => {
+    if (!fuels.length) {
+      setYearOptions([]);
+      return;
+    }
+    catalogueApi
+      .getYears({
+        customerCode: CUSTOMER_CODE,
+        make: makes,
+        model: models,
+        vehicleGeneration: generation,
+        variant: variants,
+        fuelType: fuels,
+      })
+      .then((res) => setYearOptions(toOptions(res, "year", "year")))
+      .catch(() => setYearOptions([]));
+  }, [makes, models, generation, variants, fuels]);
+
+  // 7. Fetch Categories (Aggregates) when Years change
+  useEffect(() => {
+    if (!years.length) {
+      setCategoryOptions([]);
+      return;
+    }
+    catalogueApi
+      .getCategories({
+        customerCode: CUSTOMER_CODE,
+        make: makes,
+        model: models,
+        vehicleGeneration: generation,
+        variant: variants,
+        fuelType: fuels,
+        year: years,
+      })
+      .then((res) =>
+        setCategoryOptions(toOptions(res, "aggregate", "aggregate")),
+      )
+      .catch(() => setCategoryOptions([]));
+  }, [makes, models, generation, variants, fuels, years]);
+
+  // 8. Fetch Subcategories (Sub-aggregates) when Categories change
+  useEffect(() => {
+    if (!categories.length) {
+      setSubcategoryOptions([]);
+      return;
+    }
+    catalogueApi
+      .getSubcategories({
+        customerCode: CUSTOMER_CODE,
+        make: makes,
+        model: models,
+        vehicleGeneration: generation,
+        variant: variants,
+        fuelType: fuels,
+        year: years,
+        aggregate: categories,
+      })
+      .then((res) =>
+        setSubcategoryOptions(toOptions(res, "subAggregate", "subAggregate")),
+      )
+      .catch(() => setSubcategoryOptions([]));
+  }, [makes, models, generation, variants, fuels, years, categories]);
+
+  // 9. Fetch Parts List automatically as soon as selection criteria are complete (before clicking View Parts List)
+  useEffect(() => {
+    if (
+      !makes.length ||
+      !models.length ||
+      !generation ||
+      !variants.length ||
+      !fuels.length ||
+      !years.length ||
+      !categories.length ||
+      !subcategories.length
+    ) {
+      setPartsList([]);
+      return;
+    }
+    setIsLoadingParts(true);
+    const payload = {
+      customerCode: CUSTOMER_CODE,
+      make: makes,
+      model: models,
+      vehicleGeneration: generation,
+      variant: variants,
+      fuelType: fuels,
+      year: years,
+      aggregate: categories,
+      subAggregate: subcategories,
+    };
+    if (debouncedQuery) {
+      payload.partNumber = debouncedQuery;
+      payload.searchKey = debouncedQuery;
+    }
+    catalogueApi
+      .getPartsList(payload)
+      .then((res) => setPartsList(groupPartsByComponent(extractData(res))))
+      .catch(() => setPartsList([]))
+      .finally(() => setIsLoadingParts(false));
+  }, [
+    makes,
+    models,
+    generation,
+    variants,
+    fuels,
+    years,
+    categories,
+    subcategories,
+    debouncedQuery,
+  ]);
 
   function handleMakesChange(next) {
     setMakes(next);
-    const validModels = new Set();
-    next.forEach((mk) =>
-      (MODEL_OPTIONS_BY_MAKE[mk] || []).forEach((m) => validModels.add(m)),
-    );
-    setModels((cur) => cur.filter((m) => validModels.has(m)));
+    setModels([]);
     setGeneration("");
     setVariants([]);
     setFuels([]);
@@ -165,29 +676,69 @@ export default function Top20Cars() {
     subcategories.length,
   );
 
-  // Which tiers are "active" for filtering/rendering purposes.
   const activeTiers = brandGroups.includes("all") ? TIER_ORDER : brandGroups;
 
   const filteredRows = useMemo(() => {
-    const q = partQuery.trim().toLowerCase();
-    let rows = TIERED_PARTS.filter((r) => {
+    let rows = partsList.filter((r) => {
       if (categories.length && !categories.includes(r.aggregate)) return false;
       if (subcategories.length && !subcategories.includes(r.subAggregate))
         return false;
       return true;
     });
-    // Keep rows that have at least one of the active tiers present.
+
     if (!brandGroups.includes("all")) {
       rows = rows.filter((r) => activeTiers.some((g) => Boolean(r[g])));
     }
+
     if (selectedBrands.length) {
       rows = rows.filter((r) =>
         activeTiers.some((k) => r[k] && selectedBrands.includes(r[k].brand)),
       );
     }
-    if (q) rows = rows.filter((r) => r.components.toLowerCase().includes(q));
-    return rows;
+
+    const query = String(partQuery || "").trim().toLowerCase();
+    if (!query) return rows;
+
+    return rows.filter((row) => {
+      // 1. Match component name / subAggregate / aggregate
+      const componentName = String(
+        row.components || row.componentName || row.subAggregate || row.aggregate || row.name || ""
+      ).toLowerCase();
+      if (componentName.includes(query)) {
+        return true;
+      }
+
+      // 2. Check OEM part column
+      const oemPart = row.oem || row.oemPart;
+      if (isPartMatchingSearch(oemPart, query)) {
+        return true;
+      }
+
+      // 3. Check Vendor Primary part column
+      const primaryPart = row.primary || row.primaryPart;
+      if (isPartMatchingSearch(primaryPart, query)) {
+        return true;
+      }
+
+      // 4. Check Vendor Secondary part column
+      const secondaryPart = row.secondary || row.secondaryPart;
+      if (isPartMatchingSearch(secondaryPart, query)) {
+        return true;
+      }
+
+      // 5. Check if row contains secondaryParts or raw parts array
+      if (Array.isArray(row.secondaryParts) && row.secondaryParts.some((p) => isPartMatchingSearch(p, query))) {
+        return true;
+      }
+
+      if (Array.isArray(row.parts) && row.parts.some((p) => isPartMatchingSearch(p, query))) {
+        return true;
+      }
+
+      return false;
+    });
   }, [
+    partsList,
     categories,
     subcategories,
     brandGroups,
@@ -198,12 +749,13 @@ export default function Top20Cars() {
 
   const availableBrands = useMemo(() => {
     const set = new Set();
-    for (const r of TIERED_PARTS)
+    for (const r of partsList) {
       ["oem", "primary", "secondary"].forEach(
         (k) => r[k] && set.add(r[k].brand),
       );
+    }
     return Array.from(set).sort();
-  }, []);
+  }, [partsList]);
 
   function clearAll() {
     setMakes([]);
@@ -232,78 +784,216 @@ export default function Top20Cars() {
     });
   }
 
-  function addToCart(row, tierKey) {
+  async function addToCart(row, tierKey) {
     const tier = row[tierKey];
-    if (!tier) return;
-    const cartId = `${row.rowId}__${tierKey}`;
-    const existing = cart.find((c) => c.cartId === cartId);
-    if (existing) {
-      setCart((cur) =>
-        cur.map((c) => (c.cartId === cartId ? bumpQty(c, +1) : c)),
-      );
-    } else {
-      const qty = 1;
-      const tax = tier.saleRate * 0.18 * qty;
-      setCart((cur) => [
-        ...cur,
-        {
-          cartId,
-          name: row.components,
-          code: tier.code,
-          brand: tier.brand,
-          qty,
-          mrp: tier.mrp,
-          saleRate: tier.saleRate,
-          discountPerUnit: +(tier.mrp - tier.saleRate).toFixed(2),
-          golSavings: +(tier.mrp - tier.saleRate).toFixed(2),
-          billingPrice: tier.saleRate,
-          tax: +tax.toFixed(2),
-          totalAmount: +(tier.saleRate * qty + tax).toFixed(2),
-          pointsEarned: tier.points || 0,
-          salesPriceGroup: tierKey.toUpperCase(),
-        },
-      ]);
-    }
-    showToast.success(`${row.components} (${tier.brand}) added to cart`);
-  }
-  function updateCartQty(cartId, qty) {
-    if (qty <= 0)
-      return setCart((cur) => cur.filter((c) => c.cartId !== cartId));
-    setCart((cur) =>
-      cur.map((c) => (c.cartId === cartId ? bumpQty(c, qty - c.qty) : c)),
-    );
-  }
-  function removeFromCart(cartId) {
-    setCart((cur) => cur.filter((c) => c.cartId !== cartId));
-  }
-  function checkout() {
-    if (!cart.length) return;
-    const enquiryNo = `ENQF${new Date().getFullYear()}${String(orders.length + 22667).padStart(7, "0")}`;
-    setOrders((cur) => [
-      {
-        enquiryNo,
-        customerCode: "NMSA0786",
-        source: "GOL",
-        status: "PROCESSING",
-        orderCreationDate: new Date().toISOString(),
-      },
-      ...cur,
-    ]);
-    setCart([]);
-    showToast.success(`Order ${enquiryNo} placed.`);
-    setTab("orders");
-  }
-  function viewOrder(order) {
-    const detail = ORDER_DETAILS_BY_ENQUIRY[order.enquiryNo] || {
-      enquiry_no: order.enquiryNo,
-      source: order.source,
-      status: order.status,
-      message: "Details not available yet.",
-      reference_no: "",
-      order_nos: [],
-      parts: [],
+    if (!tier || !tier.code) return;
+    const partNo = tier.code;
+    const mrp = Number(tier.mrp || 0);
+    const saleRate = tier.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier.discountPercent);
+    const payload = {
+      ...(tier.raw || {}),
+      part_number: partNo,
+      description: row.components,
+      tierType: tierKey,
+      mrp,
+      saleRate,
+      list_price: saleRate,
+      quantity: 1,
+      tax: tier.taxPercent || 18,
+      qty: 1,
+      brand_name: tier.brand || "",
     };
-    setOpenOrder(detail);
+
+    try {
+      await catalogueApi.addToCart(payload);
+      showToast.success(`${row.components} (${tier.brand}) added to cart`);
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend addToCart error, updating local state:", err);
+      showToast.success(`${row.components} (${tier.brand}) added to cart`);
+      setCart((cur) => {
+        const existing = cur.find((c) => c.code === partNo || c.part_number === partNo);
+        if (existing) {
+          return cur.map((c) =>
+            c.code === partNo || c.part_number === partNo ? { ...c, qty: c.qty + 1 } : c
+          );
+        }
+        return [
+          ...cur,
+          normalizeCartItem({
+            ...payload,
+            part_number: partNo,
+            part_desc: row.components,
+            product_brand: tier.brand,
+            mrp,
+            saleRate,
+            list_price: saleRate,
+            tierType: tierKey,
+            tax: tier.taxPercent || 18,
+            qty: 1,
+            quantity: 1,
+          }),
+        ];
+      });
+    }
+  }
+
+  async function updateCartQty(cartId, actionOrQty, newQtyVal) {
+    const item = cart.find((c) => c.cartId === cartId || c.code === cartId || c.part_number === cartId);
+    const partNumber = item?.part_number || item?.code || cartId;
+
+    let action = "increase";
+    if (typeof actionOrQty === "string") {
+      action = actionOrQty;
+    } else if (item) {
+      action = actionOrQty > item.qty ? "increase" : "decrease";
+    }
+
+    try {
+      await catalogueApi.updateCartQty(partNumber, action);
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend updateCartQty error, fallback local update:", err);
+      const targetQty = typeof actionOrQty === "number" ? actionOrQty : newQtyVal;
+      if (targetQty <= 0) {
+        setCart((cur) => cur.filter((c) => c.cartId !== cartId && c.code !== cartId));
+      } else {
+        setCart((cur) =>
+          cur.map((c) =>
+            c.cartId === cartId || c.code === cartId
+              ? {
+                ...c,
+                qty:
+                  targetQty ||
+                  (action === "increase" ? c.qty + 1 : Math.max(1, c.qty - 1)),
+              }
+              : c
+          )
+        );
+      }
+    }
+  }
+
+  async function removeFromCart(cartId) {
+    const item = cart.find((c) => c.cartId === cartId || c.code === cartId || c.part_number === cartId);
+    const partNumber = item?.part_number || item?.code || cartId;
+
+    try {
+      await catalogueApi.removeCartItem(partNumber);
+      showToast.success("Item removed from cart");
+      fetchCart();
+    } catch (err) {
+      console.warn("Backend removeCartItem error, fallback local update:", err);
+      setCart((cur) => cur.filter((c) => c.cartId !== cartId && c.code !== cartId));
+    }
+  }
+
+  async function checkout(selectedItems) {
+    const itemsToCheckout =
+      Array.isArray(selectedItems) && selectedItems.length > 0 ? selectedItems : cart;
+
+    if (!itemsToCheckout.length) {
+      showToast.warning("Please select at least one item to proceed to checkout.");
+      return;
+    }
+
+    const loggedInUser =
+      storage.get(appConfig.userStorageKey) ||
+      JSON.parse(localStorage.getItem("user") || "{}");
+
+    const workshopId =
+      loggedInUser?.outlet?.outlet_code ||
+      loggedInUser?.outlet?.outletCode ||
+      loggedInUser?.outlet?.code ||
+      loggedInUser?.outlet_code ||
+      loggedInUser?.outletCode ||
+      loggedInUser?.workshopId ||
+      loggedInUser?.outlet?.workshopId ||
+      loggedInUser?.outlet?.id ||
+      "";
+
+    const customerCode =
+      (loggedInUser?.customer_account_id && loggedInUser.customer_account_id !== "KAHD" ? loggedInUser.customer_account_id : null) ||
+      (loggedInUser?.customer_code && loggedInUser.customer_code !== "050" && loggedInUser.customer_code !== "0046" ? loggedInUser.customer_code : null) ||
+      "NMSA0786";
+
+    const payload = {
+      workshopId: String(workshopId).trim(),
+      customer_code: String(customerCode).trim(),
+      source: "GOL",
+      channel: "B2B-API",
+      reference_no: `REF-GOL-${Date.now()}`,
+      vehicle_no: "",
+      parts: itemsToCheckout.map((item) => ({
+        part_no: String(
+          item.part_number || item.code || item.partNumber || item.cartId || item.id
+        ).trim(),
+        qty: Number(item.qty || item.quantity || 1),
+      })),
+    };
+
+    try {
+      const response = await catalogueApi.createDirectEnquiryOrder(payload);
+
+      const isSuccess =
+        response?.success === true ||
+        response?.data?.success === true ||
+        Boolean(response?.enquiry_no || response?.data?.enquiry_no || response?.enquiryNo);
+
+      const enqNo =
+        response?.enquiry_no ||
+        response?.data?.enquiry_no ||
+        response?.enquiryNo ||
+        response?.data?.enquiryNo ||
+        "Direct Enquiry";
+
+      if (!isSuccess) {
+        const errorMsg =
+          response?.message ||
+          response?.error?.message ||
+          response?.data?.message ||
+          "Failed to place order";
+        showToast.error(errorMsg);
+        return;
+      }
+
+      showToast.success(`Order Enquiry Created! Ref: ${enqNo}`);
+
+      // Remove only checked-out items from cart
+      const checkedOutKeys = new Set(
+        itemsToCheckout.map((i) =>
+          String(i.part_number || i.code || i.partNumber || i.cartId || i.id).trim()
+        )
+      );
+
+      setCart((cur) =>
+        cur.filter((c) => {
+          const key = String(c.part_number || c.code || c.partNumber || c.cartId || c.id).trim();
+          return !checkedOutKeys.has(key);
+        })
+      );
+
+      // Also remove from backend cart to stay in sync
+      itemsToCheckout.forEach((item) => {
+        const pNo = item.part_number || item.code || item.partNumber;
+        if (pNo) catalogueApi.removeCartItem(pNo).catch(() => { });
+      });
+
+      setTab("orders");
+      fetchOrders();
+    } catch (err) {
+      console.error("Backend createDirectEnquiryOrder error:", err);
+      const errorMsg =
+        err.response?.data?.error?.message ||
+        err.response?.data?.message ||
+        err.message ||
+        "Error placing order";
+      showToast.error(errorMsg);
+    }
+  }
+
+  function viewOrder(order) {
+    setOpenOrder(order);
   }
 
   return (
@@ -332,18 +1022,24 @@ export default function Top20Cars() {
                 onMakesChange={handleMakesChange}
                 models={models}
                 onModelsChange={handleModelsChange}
+                makeOptions={makeOptions}
                 modelOptions={modelOptions}
                 generation={generation}
+                generations={generationOptions}
                 onPreviewGen={setPreviewGen}
                 setGeneration={handleGenerationChange}
                 variants={variants}
                 onVariantsChange={handleVariantsChange}
+                variantOptions={variantOptions}
                 fuels={fuels}
                 onFuelsChange={handleFuelsChange}
+                fuelOptions={fuelOptions}
                 years={years}
                 onYearsChange={handleYearsChange}
+                yearOptions={yearOptions}
                 categories={categories}
                 onCategoriesChange={handleCategoriesChange}
+                categoryOptions={categoryOptions}
                 subcategories={subcategories}
                 setSubcategories={setSubcategories}
                 subcategoryOptions={subcategoryOptions}
@@ -352,8 +1048,8 @@ export default function Top20Cars() {
                   canExplore
                     ? setPhase("explore")
                     : showToast.warning(
-                        "Complete every selection to view the parts list.",
-                      )
+                      "Complete every selection to view the parts list.",
+                    )
                 }
               />
             ) : (
@@ -382,6 +1078,7 @@ export default function Top20Cars() {
                 cart={cart}
                 onAdd={addToCart}
                 onQty={updateCartQty}
+                isLoadingParts={isLoadingParts}
               />
             )}
           </Card>
@@ -394,6 +1091,8 @@ export default function Top20Cars() {
             items={cart}
             onRemove={removeFromCart}
             onCheckout={checkout}
+            onUpdateQty={updateCartQty}
+            onBrowseParts={() => setTab("catalogue")}
           />
         </Card>
       )}
@@ -402,7 +1101,7 @@ export default function Top20Cars() {
           <CatalogueOrdersTable
             orders={orders}
             onView={viewOrder}
-            onRefresh={() => showToast.success("Orders refreshed")}
+            onRefresh={fetchOrders}
           />
         </Card>
       )}
@@ -425,11 +1124,16 @@ export default function Top20Cars() {
             >
               <X className="h-4 w-4" />
             </button>
-            <img
-              src={previewGen.url}
-              alt={previewGen.label}
-              className="mx-auto h-56 w-auto object-contain"
-            />
+            {previewGen.url ? (
+              <img
+                src={previewGen.url}
+                alt={previewGen.label}
+                className="mx-auto h-56 w-auto object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : null}
             <p className="mt-3 text-center text-base font-semibold uppercase tracking-wide text-ink-800">
               {previewGen.label}
             </p>
@@ -443,20 +1147,26 @@ export default function Top20Cars() {
 function SelectionPhase({
   makes,
   onMakesChange,
+  makeOptions,
   models,
   onModelsChange,
   modelOptions,
   generation,
+  generations,
   setGeneration,
   onPreviewGen,
   variants,
   onVariantsChange,
+  variantOptions,
   fuels,
   onFuelsChange,
+  fuelOptions,
   years,
   onYearsChange,
+  yearOptions,
   categories,
   onCategoriesChange,
+  categoryOptions,
   subcategories,
   setSubcategories,
   subcategoryOptions,
@@ -464,20 +1174,19 @@ function SelectionPhase({
   onExplore,
 }) {
   const showModel = makes.length > 0;
-  const showGeneration = models.length > 0;
-  const showVariant = Boolean(generation);
-  const showFuel = variants.length > 0;
-  const showYear = fuels.length > 0;
-  const showCategories = years.length > 0;
-  const showSubcategories = categories.length > 0;
+  const showGeneration = models.length > 0 || generations.length > 0;
+  const showVariant = Boolean(generation) || variantOptions.length > 0;
+  const showFuel = variants.length > 0 || fuelOptions.length > 0;
+  const showYear = fuels.length > 0 || yearOptions.length > 0;
+  const showCategories = years.length > 0 || categoryOptions.length > 0;
+  const showSubcategories = categories.length > 0 || subcategoryOptions.length > 0;
 
   return (
     <div className="space-y-6 p-5">
-      <div className="flex gap-6">
+      <div className="flex flex-wrap gap-6">
         <UnderlineField label="Make">
           <MultiSelect
-            label="Make"
-            options={MAKE_OPTIONS}
+            options={makeOptions}
             value={makes}
             onChange={onMakesChange}
             placeholder="Select Make"
@@ -487,7 +1196,6 @@ function SelectionPhase({
         {showModel && (
           <UnderlineField label="Model">
             <MultiSelect
-              label="Model"
               options={modelOptions}
               value={models}
               onChange={onModelsChange}
@@ -504,58 +1212,87 @@ function SelectionPhase({
             Generation
           </p>
           <div className="flex flex-wrap gap-3">
-            {GENERATIONS.map((g) => {
-              const active = generation === g.value;
-              return (
-                <div
-                  key={g.value}
-                  className={clsx(
-                    "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
-                    active
-                      ? "border-accent-500 bg-accent-50"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setGeneration(active ? "" : g.value)}
+            {generations.length === 0 ? (
+              <div className="py-4 text-sm text-ink-400">Loading generations...</div>
+            ) : (
+              generations.map((g) => {
+                const active = generation === g.value;
+                return (
+                  <div
+                    key={g.value}
                     className={clsx(
-                      "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border",
+                      "relative w-40 overflow-hidden rounded-xl border p-3 transition-colors",
                       active
-                        ? "border-accent-500 bg-accent-500"
-                        : "border-ink-300 bg-white",
+                        ? "border-accent-500 bg-accent-50"
+                        : "border-ink-200 hover:border-ink-300",
                     )}
-                    aria-label={`Select ${g.label}`}
                   >
-                    {active && <Check className="h-3.5 w-3.5 text-white" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onPreviewGen(g)}
-                    className="block w-full cursor-zoom-in"
-                  >
-                    <img
-                      src={g.url}
-                      alt={g.label}
-                      className="mx-auto h-16 w-auto object-cover"
-                    />
-                    <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
-                      {g.label.split(" (")[0]}
-                    </p>
-                  </button>
-                </div>
-              );
-            })}
+                    <button
+                      type="button"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className={clsx(
+                        "absolute right-2 top-2 flex h-5 w-5 cursor-pointer items-center justify-center rounded border z-10",
+                        active
+                          ? "border-accent-500 bg-accent-500"
+                          : "border-ink-300 bg-white",
+                      )}
+                      aria-label={`Select ${g.label}`}
+                    >
+                      {active && <Check className="h-3.5 w-3.5 text-white" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGeneration(active ? "" : g.value)}
+                      className="block w-full cursor-pointer text-left"
+                    >
+                      {g.url ? (
+                        <img
+                          src={g.url}
+                          alt={g.label}
+                          className="mx-auto h-16 w-auto object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                            if (e.currentTarget.nextSibling) {
+                              e.currentTarget.nextSibling.style.display = "flex";
+                            }
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg bg-brand-50 text-brand-600"
+                        style={{ display: g.url ? "none" : "flex" }}
+                      >
+                        <Car className="h-8 w-8 text-brand-600" />
+                      </div>
+                      <p className="mt-2 text-center text-xs font-semibold uppercase text-ink-800">
+                        {g.label.split(" (")[0]}
+                      </p>
+                    </button>
+                    {g.url && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPreviewGen(g);
+                        }}
+                        className="mt-1 block mx-auto text-[10px] text-ink-400 hover:text-ink-600 underline cursor-pointer"
+                      >
+                        Preview
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       )}
 
       {showVariant && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
           <UnderlineField label="Variant">
             <MultiSelect
-              label="Variant"
-              options={VARIANT_OPTIONS}
+              options={variantOptions}
               value={variants}
               onChange={onVariantsChange}
               placeholder="Select Variant"
@@ -564,8 +1301,7 @@ function SelectionPhase({
           {showFuel && (
             <UnderlineField label="Fuel Type">
               <MultiSelect
-                label="Fuel Type"
-                options={FUEL_OPTIONS}
+                options={fuelOptions}
                 value={fuels}
                 onChange={onFuelsChange}
                 placeholder="Select Fuel Type"
@@ -575,8 +1311,7 @@ function SelectionPhase({
           {showYear && (
             <UnderlineField label="Year">
               <MultiSelect
-                label="Year"
-                options={YEAR_OPTIONS}
+                options={yearOptions}
                 value={years}
                 onChange={onYearsChange}
                 placeholder="Select Year"
@@ -586,8 +1321,7 @@ function SelectionPhase({
           {showCategories && (
             <UnderlineField label="Categories">
               <MultiSelect
-                label="Categories"
-                options={CATEGORY_OPTIONS}
+                options={categoryOptions}
                 value={categories}
                 onChange={onCategoriesChange}
                 placeholder="Select Categories"
@@ -599,7 +1333,6 @@ function SelectionPhase({
           {showSubcategories && (
             <UnderlineField label="Sub Categories">
               <MultiSelect
-                label="Sub Categories"
                 options={subcategoryOptions}
                 value={subcategories}
                 onChange={setSubcategories}
@@ -649,33 +1382,34 @@ function ExplorePhase({
   onAdd,
   onQty,
 }) {
-  const catLabels = categories
-    .map((v) => CATEGORY_OPTIONS.find((c) => c.value === v)?.label)
-    .filter(Boolean);
-  const subLabels = subcategories
-    .map((v) => subcategoryOptions.find((s) => s.value === v)?.label)
-    .filter(Boolean);
-
   const chips = [
     makes.length > 0 ? `${makes.join(", ")}` : null,
     models.length > 0 ? `${models.join(", ")}` : null,
-    generation &&
-      `${
-        GENERATIONS.find((g) => g.value === generation)?.label?.split(
-          " (",
-        )[0] ?? ""
-      }`,
+    generation ? String(generation) : null,
     variants.length > 0 ? `${variants.join(", ")}` : null,
     fuels.length > 0 ? `${fuels.join(", ")}` : null,
     years.length > 0 ? `${years.join(", ")}` : null,
-    catLabels.length > 0 ? `${catLabels.join(", ")}` : null,
-    subLabels.length > 0 ? `${subLabels.join(", ")}` : null,
+    categories.length > 0 ? `${categories.join(", ")}` : null,
+    subcategories.length > 0 ? `${subcategories.join(", ")}` : null,
   ]
     .filter(Boolean)
     .map((v) => String(v).toUpperCase());
 
   const brandOptions = availableBrands.map((b) => ({ value: b, label: b }));
   const activeTiers = brandGroups.includes("all") ? TIER_ORDER : brandGroups;
+
+  const totalPartsCount = useMemo(() => {
+    let count = 0;
+    for (const r of rows) {
+      for (const t of activeTiers) {
+        const part = r[t];
+        if (part && (!selectedBrands.length || selectedBrands.includes(part.brand))) {
+          count += 1;
+        }
+      }
+    }
+    return count;
+  }, [rows, activeTiers, selectedBrands]);
 
   return (
     <div className="p-5">
@@ -690,65 +1424,71 @@ function ExplorePhase({
             </span>
           ))}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="border" onClick={onClearEdit}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="border" size="sm" onClick={onClearEdit}>
             Clear &amp; Edit
           </Button>
-          <Button variant="secondary" icon={Pencil} onClick={onEditSelection}>
+          <Button variant="secondary" size="sm" icon={Pencil} onClick={onEditSelection}>
             Edit Selection
           </Button>
         </div>
       </div>
 
-      <div className="mb-4 space-y-3">
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">
-            Brand Group
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {BRAND_GROUP_TABS.map((t) => {
-              const active = brandGroups.includes(t.value);
-              return (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => onToggleBrandGroup(t.value)}
-                  className={clsx(
-                    "rounded-full px-4 cursor-pointer py-1.5 text-sm font-semibold transition-colors",
-                    active
-                      ? "border border-accent-500 bg-white text-accent-600"
-                      : "border border-ink-200 bg-white text-ink-600 hover:bg-ink-50",
-                  )}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
+      <div className="mb-4 space-y-4">
+        <div className="flex flex-wrap items-end gap-6 sm:gap-8">
+          <div>
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-ink-500">
+              Brand Group
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {BRAND_GROUP_TABS.map((t) => {
+                const active = brandGroups.includes(t.value);
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => onToggleBrandGroup(t.value)}
+                    className={clsx(
+                      "rounded-full px-4 cursor-pointer py-1 text-xs font-semibold transition-colors",
+                      active
+                        ? "border border-accent-500 bg-white text-accent-600"
+                        : "border border-ink-200 bg-white text-ink-600 hover:bg-ink-50",
+                    )}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="w-44 sm:w-48">
+            <UnderlineField label="Brand">
+              <MultiSelect
+                options={brandOptions}
+                value={selectedBrands}
+                onChange={setSelectedBrands}
+                placeholder="All Brands"
+              />
+            </UnderlineField>
+          </div>
+
+          <div className="w-44 sm:w-48">
+            <UnderlineField label="Columns">
+              <MultiSelect
+                options={OPTIONAL_COLUMNS}
+                value={selectedColumns}
+                onChange={setSelectedColumns}
+                placeholder="Add columns"
+                withSelectAll
+                selectAllLabel="All"
+              />
+            </UnderlineField>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_2fr_auto]">
-          <UnderlineField label="Brand">
-            <MultiSelect
-              label="Brand"
-              options={brandOptions}
-              value={selectedBrands}
-              onChange={setSelectedBrands}
-              placeholder="All Brands"
-            />
-          </UnderlineField>
-          <UnderlineField label="Columns">
-            <MultiSelect
-              label="Columns"
-              options={OPTIONAL_COLUMNS}
-              value={selectedColumns}
-              onChange={setSelectedColumns}
-              placeholder="Add columns"
-              withSelectAll
-              selectAllLabel="All"
-            />
-          </UnderlineField>
-          <div className="mt-2.5 ">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
             <Input
               type="search"
               value={partQuery}
@@ -756,11 +1496,8 @@ function ExplorePhase({
               placeholder="Search Part"
             />
           </div>
-          <div className="self-end">
-            <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-700">
-              <PackageOpen className="h-4 w-4 text-accent-500" />
-              <span className="font-bold">{rows.length}</span> parts
-            </span>
+          <div className="whitespace-nowrap text-xs text-ink-500 font-medium">
+            <span className="font-semibold text-ink-700">{totalPartsCount}</span> parts
           </div>
         </div>
       </div>
@@ -785,20 +1522,20 @@ function ExplorePhase({
 
 /* ─── Combined table (Brand Group = All): OEM + Primary + Secondary side by side ─── */
 const COL_WIDTH = {
-  components: 190,
-  partNo: 130,
-  brand: 100,
-  mrp: 95,
-  saleRate: 100,
-  qty: 130,
-  warranty: 90,
-  coins: 75,
-  etd: 70,
+  components: 180,
+  partNo: 105,
+  brand: 90,
+  mrp: 68,
+  saleRate: 72,
+  qty: 85,
+  warranty: 75,
+  coins: 65,
+  etd: 60,
 };
 
 function tierColumnKeys(tierKey, extraColumns) {
   const keys = ["partNo"];
-  if (tierKey !== "oem" && extraColumns.includes("brand")) keys.push("brand");
+  if (extraColumns.includes("brand")) keys.push("brand");
   keys.push("mrp", "saleRate", "qty");
   if (extraColumns.includes("warranty")) keys.push("warranty");
   if (extraColumns.includes("coins")) keys.push("coins");
@@ -807,12 +1544,9 @@ function tierColumnKeys(tierKey, extraColumns) {
 }
 
 const TIER_TINT = {
-  oem: { header: "bg-accent-100 text-accent-700", cell: "bg-accent-50/50" },
-  primary: {
-    header: "bg-emerald-100 text-emerald-700",
-    cell: "bg-emerald-50/50",
-  },
-  secondary: { header: "bg-amber-100 text-amber-700", cell: "bg-amber-50/50" },
+  oem: { cell: "bg-[#FFF9F5]" },
+  primary: { cell: "bg-[#F3FAF5]" },
+  secondary: { cell: "bg-[#FEFAF2]" },
 };
 
 function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
@@ -825,10 +1559,10 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
     );
 
   return (
-    <div className="scrollbar-hide overflow-x-auto rounded-xl border border-ink-100">
+    <div className="overflow-x-auto rounded-xl border border-ink-200 shadow-xs">
       <table
-        className="border-collapse text-sm"
-        style={{ tableLayout: "fixed", width: totalWidth, minWidth: "100%" }}
+        className="border-collapse text-xs"
+        style={{ tableLayout: "fixed", width: "100%", minWidth: totalWidth }}
       >
         <colgroup>
           <col style={{ width: COL_WIDTH.components }} />
@@ -842,7 +1576,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
           <tr>
             <th
               rowSpan={2}
-              className="border-r border-ink-100 bg-white px-4 py-3 text-left text-xs font-medium text-ink-500 align-middle"
+              className="sticky left-0 z-20 border-r border-ink-100 bg-white px-3.5 py-3 text-left text-xs font-semibold text-ink-700 align-middle shadow-[2px_0_4px_rgba(0,0,0,0.03)]"
             >
               Components
             </th>
@@ -858,8 +1592,8 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
               >
                 <span
                   className={clsx(
-                    "inline-block rounded-md px-3 py-1 text-xs font-semibold uppercase",
-                    TIER_TINT[tierKey].header,
+                    "inline-block rounded-md px-3 py-0.5 text-xs font-bold shadow-xs",
+                    TIER_META[tierKey].badgeClass,
                   )}
                 >
                   {TIER_META[tierKey].label}
@@ -867,7 +1601,7 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
               </th>
             ))}
           </tr>
-          <tr className="text-[11px] font-medium text-ink-500">
+          <tr className="text-xs font-medium text-ink-500">
             {tiers.map((tierKey, i) => (
               <SubHeaders
                 key={tierKey}
@@ -881,14 +1615,18 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.rowId} className="border-t border-ink-100 align-top">
-              <td className="border-r border-ink-100 bg-white px-4 py-4 text-sm font-semibold uppercase text-ink-800 truncate">
+            <tr key={row.rowId} className="border-t border-ink-100 align-middle">
+              <td className="sticky left-0 z-10 border-r border-ink-100 bg-white px-3.5 py-2.5 text-xs font-bold uppercase text-ink-800 leading-snug whitespace-normal break-words shadow-[2px_0_4px_rgba(0,0,0,0.03)]">
                 {row.components}
               </td>
               {tiers.map((tierKey, i) => {
                 const tier = row[tierKey];
                 const cartRow = cart.find(
-                  (c) => c.cartId === `${row.rowId}__${tierKey}`,
+                  (c) =>
+                    c.cartId === tier?.code ||
+                    c.code === tier?.code ||
+                    c.part_number === tier?.code ||
+                    c.cartId === `${row.rowId}__${tierKey}`,
                 );
                 return (
                   <TierCells
@@ -901,7 +1639,11 @@ function CombinedTable({ tiers, rows, cart, onAdd, onQty, extraColumns }) {
                     qty={cartRow?.qty ?? 0}
                     onQty={(v) =>
                       cartRow
-                        ? onQty(cartRow.cartId, v)
+                        ? onQty(
+                          cartRow.cartId || cartRow.code || tier?.code,
+                          v > cartRow.qty ? "increase" : "decrease",
+                          v,
+                        )
                         : v > 0
                           ? onAdd(row, tierKey)
                           : null
@@ -935,9 +1677,10 @@ function SubHeaders({ colKeys, tint, lastGroup }) {
         <th
           key={k}
           className={clsx(
-            "px-3 py-2 truncate",
+            "py-2 text-xs font-medium text-ink-500",
             tint,
             COL_LABEL[k].align,
+            k === "partNo" ? "px-2" : "px-1.5",
             i === colKeys.length - 1 && !lastGroup && "border-r border-ink-100",
           )}
         >
@@ -954,7 +1697,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
       <td
         colSpan={colKeys.length}
         className={clsx(
-          "px-3 py-4 text-center text-xs text-ink-400",
+          "px-2 py-3 text-center text-xs text-ink-400",
           tint,
           !lastGroup && "border-r border-ink-100",
         )}
@@ -963,34 +1706,59 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
       </td>
     );
   }
+
+  const mrp = Number(tier.mrp || 0);
+  const saleRate = tier.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier.discountPercent);
+  const partNo = tier.displayPartNo || formatDisplayPartNo(tier.partNumber || tier.code, tier.lineCode);
+
   return (
     <>
       {colKeys.map((k, i) => {
         const isLastCol = i === colKeys.length - 1;
-        const cellCls = clsx(
-          "px-3 py-4 truncate",
-          tint,
-          isLastCol && !lastGroup && "border-r border-ink-100",
-        );
+        const borderR = isLastCol && !lastGroup ? "border-r border-ink-100" : "";
         switch (k) {
           case "partNo":
             return (
-              <td key={k} className={cellCls}>
-                <span className="text-xs font-semibold text-ink-800">
-                  {tier.code}
+              <td
+                key={k}
+                className={clsx(
+                  "px-2 py-2.5 text-left whitespace-normal break-all leading-tight",
+                  tint,
+                  borderR,
+                )}
+                title={partNo || tier.code}
+              >
+                <span className="text-xs font-semibold text-ink-800 block">
+                  {partNo || tier.code}
                 </span>
               </td>
             );
-          case "brand":
+          case "brand": {
+            const brandName =
+              tier.brand && tier.brand !== "-"
+                ? tier.brand
+                : tierKey === "oem"
+                  ? (tier.raw?.make || "OEM")
+                  : "—";
+
             return (
-              <td key={k} className={clsx(cellCls, "text-xs text-ink-600")}>
-                {tier.brand}
+              <td
+                key={k}
+                className={clsx("px-2 py-3 text-xs text-ink-600 whitespace-normal break-words", tint, borderR)}
+                title={brandName}
+              >
+                {brandName}
               </td>
             );
+          }
+
           case "mrp":
             return (
-              <td key={k} className={clsx(cellCls, "text-center text-ink-700")}>
-                ₹{Math.round(tier.mrp).toLocaleString("en-IN")}
+              <td
+                key={k}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-600 font-medium whitespace-nowrap", tint, borderR)}
+              >
+                ₹{Math.round(mrp).toLocaleString("en-IN")}
               </td>
             );
           case "saleRate":
@@ -998,18 +1766,19 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
               <td
                 key={k}
                 className={clsx(
-                  cellCls,
-                  "text-center font-semibold text-ink-800",
+                  "px-2 py-3 text-center text-xs font-semibold text-ink-800 whitespace-nowrap",
+                  tint,
+                  borderR,
                 )}
               >
-                ₹{Math.round(tier.saleRate).toLocaleString("en-IN")}
+                ₹{Math.round(saleRate).toLocaleString("en-IN")}
               </td>
             );
           case "qty":
             return (
-              <td key={k} className={cellCls}>
+              <td key={k} className={clsx("px-2 py-3", tint, borderR)}>
                 <div className="flex justify-center">
-                  <CatalogueQtyStepper value={qty} onChange={onQty} min={0} />
+                  <CatalogueQtyStepper value={qty} onChange={onQty} min={0} size="xs" />
                 </div>
               </td>
             );
@@ -1017,7 +1786,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.warrantyDays ? `${tier.warrantyDays}d` : "—"}
               </td>
@@ -1026,7 +1795,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.points || "—"}
               </td>
@@ -1035,7 +1804,7 @@ function TierCells({ tierKey, tier, colKeys, tint, lastGroup, qty, onQty }) {
             return (
               <td
                 key={k}
-                className={clsx(cellCls, "text-center text-xs text-ink-500")}
+                className={clsx("px-2 py-3 text-center text-xs text-ink-500", tint, borderR)}
               >
                 {tier.eda != null ? `${tier.eda}d` : "—"}
               </td>
@@ -1107,13 +1876,24 @@ function TierTable({
         <tbody>
           {rows.map((row) => {
             const tier = row[tierKey];
+            const mrp = Number(tier?.mrp || 0);
+            const saleRate = tier?.saleRate ?? getCalculatedSaleRate(mrp, tierKey, tier?.discountPercent);
+            const partNo = tier?.displayPartNo || formatDisplayPartNo(tier?.partNumber || tier?.code, tier?.lineCode);
             const cartRow = cart.find(
-              (c) => c.cartId === `${row.rowId}__${tierKey}`,
+              (c) =>
+                c.cartId === tier?.code ||
+                c.code === tier?.code ||
+                c.part_number === tier?.code ||
+                c.cartId === `${row.rowId}__${tierKey}`,
             );
             const qty = cartRow?.qty ?? 0;
             const handleQty = (v) =>
               cartRow
-                ? onQty(cartRow.cartId, v)
+                ? onQty(
+                  cartRow.cartId || cartRow.code || tier?.code,
+                  v > cartRow.qty ? "increase" : "decrease",
+                  v,
+                )
                 : v > 0
                   ? onAdd(row, tierKey)
                   : null;
@@ -1134,19 +1914,23 @@ function TierTable({
                   <>
                     <td className="px-3 py-4">
                       <span className="text-xs font-semibold text-ink-800">
-                        {tier.code}
+                        {partNo || tier.code}
                       </span>
                     </td>
                     {showBrand && (
                       <td className="px-3 py-4 text-xs text-ink-600">
-                        {tier.brand}
+                        {tier.brand && tier.brand !== "-"
+                          ? tier.brand
+                          : tierKey === "oem"
+                            ? (tier.raw?.make || "OEM")
+                            : "—"}
                       </td>
                     )}
                     <td className="px-3 py-4 text-center text-ink-700">
-                      ₹{Math.round(tier.mrp).toLocaleString("en-IN")}
+                      ₹{Math.round(mrp).toLocaleString("en-IN")}
                     </td>
                     <td className="px-3 py-4 text-center font-semibold text-ink-800">
-                      ₹{Math.round(tier.saleRate).toLocaleString("en-IN")}
+                      ₹{Math.round(saleRate).toLocaleString("en-IN")}
                     </td>
                     <td className="px-3 py-4">
                       <div className="flex justify-center">
@@ -1188,7 +1972,7 @@ function TierTable({
 function UnderlineField({ label, children }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-medium text-brand-700">{label}</p>
+      <p className="mb-1 text-xs font-medium text-ink-500">{label}</p>
       {children}
     </div>
   );

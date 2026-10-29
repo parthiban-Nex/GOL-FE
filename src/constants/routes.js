@@ -61,6 +61,11 @@ export const ROUTES = Object.freeze({
   ATTENDANCE: "/attendance",
   SELF_CONFIGURATION: "/self-configuration",
   INTEGRATION: "/integration",
+  GARAGE: "/garage-onboard",
+  GARAGE_ONBOARD: "/garage-onboard",
+  GARAGE_APPROVALS: "/garage-approvals",
+  GARAGE_SETUP: "/garage-setup",
+  GARAGE_SETUP_APPROVAL: "/garage-setup-approval",
   UNAUTHORIZED: "/unauthorized",
   NOT_FOUND: "/404",
 });

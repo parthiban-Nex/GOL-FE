@@ -2,7 +2,27 @@ import { resolveIcon } from "@/menu/iconMap";
 import { decodeButtons } from "@/menu/buttonOperations";
 
 export function normalizeApiMenu(apiMenu = []) {
-  return apiMenu.map(normalizeNode).filter(Boolean);
+  const normalized = apiMenu.map(normalizeNode).filter(Boolean);
+  const hasGarage = normalized.some(
+    (m) =>
+      m.path?.includes("garage") ||
+      m.label?.toLowerCase().includes("garage") ||
+      (m.children && m.children.some((c) => c.path?.includes("garage")))
+  );
+  if (!hasGarage) {
+    normalized.push({
+      key: "api-menu-garage",
+      label: "Garage",
+      icon: resolveIcon("fitmaster") || resolveIcon("master"),
+      children: [
+        { key: "api-menu-garage-onboard", label: "Garage Onboard", path: "/garage-onboard" },
+        { key: "api-menu-garage-approvals", label: "Garage Approvals", path: "/garage-approvals" },
+        { key: "api-menu-garage-setup", label: "Garage Setup", path: "/garage-setup" },
+        { key: "api-menu-garage-setup-approval", label: "Setup Approvals", path: "/garage-setup-approval" },
+      ],
+    });
+  }
+  return normalized;
 }
 
 function normalizeNode(item) {
